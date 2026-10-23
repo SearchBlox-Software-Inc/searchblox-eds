@@ -824,6 +824,13 @@
   margin: 0;
 }
 
+/* The widget is a size container (for its container queries), so it has no
+   width of its own: in a spot that sizes to its content, such as the EDS
+   header's tools, a search box would collapse. Give it a sensible minimum. */
+.searchblox-search.sb-box-only {
+  min-width: clamp(10rem, 45vw, 18rem);
+}
+
 /* Search Settings and Plugin Settings (`settings` option): icon buttons beside
    the search button, each opening a panel below it. */
 .searchblox-search .sb-settings {
