@@ -496,8 +496,16 @@
   }
 }
 
+/* Boxed like the AI overview. */
 .searchblox-search .sb-faqs {
-  margin-bottom: 24px;
+  margin-bottom: 28px;
+  padding: 18px 24px 20px;
+  border: 1px solid var(--_sb-divider);
+  border-radius: calc(var(--sb-radius, 8px) * 3);
+}
+
+.searchblox-search .sb-faq-list > li:last-child .sb-faq {
+  border-bottom: 0;
 }
 
 .searchblox-search .sb-faqs-title {

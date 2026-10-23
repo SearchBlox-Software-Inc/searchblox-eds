@@ -3,7 +3,7 @@ import { mount } from './searchblox-core.js';
 /**
  * Site-wide options for every SearchBlox widget and block on an EDS site, from an
  * optional searchblox-config.json next to this file, e.g.
- *   { "domain": "https://demo1.searchblox.com", "collections": "123", "chatbot": "miami" }
+ *   { "domain": "https://search.example.com", "collections": "1", "chatbot": "my-chatbot" }
  * Options in a widget link or block table override it. Loaded once per page.
  */
 let siteConfig;
