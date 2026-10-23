@@ -22,6 +22,7 @@ const DEFAULTS = {
   pageSize: 10,
   facets: [],
   checkboxFacets: ['topics', 'keywords'],
+  dateFacets: ['lastmodified'],
   autosuggest: true,
   suggestLimit: 6,
   smartSuggest: '',
@@ -53,6 +54,7 @@ const DEFAULTS = {
 };
 
 const FACET_LABELS = {
+  lastmodified: 'Date',
   contenttype: 'Content Type',
   keywords: 'Keywords',
   colname: 'Collection',
@@ -84,6 +86,14 @@ const ASSIST_LIMIT = 4;
 const ASSIST_SKIP = /^(mp3|mp4|wav|ogg|m4a|m4b|m4p|aac|flac|wma|aiff?|aifc|mid|avi|mov|wmv|webm|mkv|flv|gif)$/i;
 const ASSIST_PROMPTS = ['analyze', 'compare', 'explain', 'highlights', 'summarize'];
 const TOPICS_SHOWN = 5;
+// Date facets, as in the SearchBlox search plugin: these ranges up to now, or a
+// custom range picked with two date fields.
+const DATE_PRESETS = [
+  ['day', 'Last 24 hours', (d) => d.setDate(d.getDate() - 1)],
+  ['week', 'Past week', (d) => d.setDate(d.getDate() - 7)],
+  ['month', 'Past month', (d) => d.setMonth(d.getMonth() - 1)],
+  ['year', 'Past year', (d) => d.setFullYear(d.getFullYear() - 1)],
+];
 // As in the SearchBlox search plugin: 5 popular searches when nothing matches,
 // 5 trending searches when the empty box is focused, AI Mode answers from 10
 // passages, the chat asks if there's anything else after 30 idle minutes, and
@@ -166,6 +176,9 @@ export function normaliseConfig(raw = {}) {
     checkboxFacets: flat.checkboxfacets === undefined
       ? DEFAULTS.checkboxFacets
       : toList(flat.checkboxfacets).map((f) => f.toLowerCase()),
+    dateFacets: flat.datefacets === undefined
+      ? DEFAULTS.dateFacets
+      : toList(flat.datefacets).map((f) => f.toLowerCase()),
     autosuggest: toBool(flat.autosuggest, DEFAULTS.autosuggest),
     suggestLimit: suggestLimit > 0 ? suggestLimit : DEFAULTS.suggestLimit,
     smartSuggest: `${flat.smartsuggest || ''}`.trim(),
@@ -485,6 +498,42 @@ const faqAction = (config, query, uid, action) => track(config, '/rest/v2/api/sm
 // API
 // ------------------------------------------------------------------
 
+// Local date and time as SearchBlox takes it: 2026-10-23T14:05:00.
+const pad = (n) => `${n}`.padStart(2, '0');
+const sbTime = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  + `T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+
+// When a date preset starts, counted back from `now`.
+function presetStart(key, now) {
+  const start = new Date(now);
+  DATE_PRESETS.find(([k]) => k === key)?.[2](start);
+  return start;
+}
+
+// A date facet's value: a preset key ("week") or a custom range of local dates
+// ("2024-01-01..2025-12-31", either end may be empty). Returns the API range.
+function dateRange(value, now) {
+  if (DATE_PRESETS.some(([k]) => k === value)) return `[${sbTime(presetStart(value, now))}TO*]`;
+  const [from, to] = `${value}`.split('..');
+  const day = /^\d{4}-\d{2}-\d{2}$/;
+  if (!day.test(from) && !day.test(to)) return '';
+  return `[${day.test(from) ? `${from}T00:00:00` : '*'}TO${day.test(to) ? `${to}T23:59:59` : '*'}]`;
+}
+
+const formatDay = (value) => new Date(`${value}T00:00:00`)
+  .toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+
+// How a date facet's value reads on its chip.
+function dateLabel(value) {
+  const preset = DATE_PRESETS.find(([k]) => k === value);
+  if (preset) return preset[1];
+  const [from, to] = `${value}`.split('..');
+  if (from && to) return `${formatDay(from)} – ${formatDay(to)}`;
+  return from ? `From ${formatDay(from)}` : `Until ${formatDay(to)}`;
+}
+
+const isDateFacet = (config, field) => config.dateFacets.includes(field);
+
 /**
  * Builds the Search API URL. `state` = { query, page, filters: { field: [values] },
  * sort, sortdir, allTerms, mlt }. `mlt` ({ id, col }) asks for pages like that
@@ -507,12 +556,25 @@ export function buildSearchUrl(config, state) {
   params.set('public', 'true');
   config.collections.forEach((col) => params.append('col', col));
 
+  // Date facets count each preset range, and a selected range filters only when
+  // it's among the counted ranges too.
+  const now = new Date();
   config.facets.forEach(({ field }) => {
     params.append('facet.field', field);
-    params.set(`f.${field}.size`, `${FACET_SIZE}`);
+    if (!isDateFacet(config, field)) {
+      params.set(`f.${field}.size`, `${FACET_SIZE}`);
+      return;
+    }
+    DATE_PRESETS.forEach(([key]) => params.append(`f.${field}.range`, dateRange(key, now)));
+    const selected = dateRange(values(state.filters?.[field])[0], now);
+    if (selected) {
+      if (!params.getAll(`f.${field}.range`).includes(selected)) params.append(`f.${field}.range`, selected);
+      params.append(`f.${field}.filter`, selected);
+    }
   });
 
   Object.entries(state.filters || {}).forEach(([field, value]) => {
+    if (isDateFacet(config, field)) return;
     values(value).forEach((v) => params.append(`f.${field}.filter`, v));
   });
 
@@ -600,9 +662,12 @@ export function parseResponse(data = {}) {
   const facets = {};
   (data.facets || []).forEach((group) => {
     (group.facet || []).forEach((facet) => {
+      // Date ranges come back with `from` and no name, counted or not.
       facets[facet.name] = (facet.facetinner || [])
-        .filter((item) => item.count > 0)
-        .map((item) => ({ value: item.name, count: item.count }));
+        .filter((item) => item.from || item.count > 0)
+        .map((item) => (item.from
+          ? { from: item.from, count: item.count }
+          : { value: item.name, count: item.count }));
     });
   });
 
@@ -1738,8 +1803,8 @@ function renderSelectedFilters(root, config, state) {
   const chips = config.facets.flatMap(({ field, label }) => values(state.filters[field]).map((value) => el('button', {
     type: 'button',
     className: 'sb-chip',
-    title: `Remove filter: ${label}: ${value}`,
-    'aria-label': `Remove filter: ${label}: ${value}`,
+    title: `Remove filter: ${label}: ${isDateFacet(config, field) ? dateLabel(value) : value}`,
+    'aria-label': `Remove filter: ${label}: ${isDateFacet(config, field) ? dateLabel(value) : value}`,
     onClick: () => root.sbRun({
       ...state,
       page: 1,
@@ -1748,7 +1813,7 @@ function renderSelectedFilters(root, config, state) {
         [field]: values(state.filters[field]).filter((v) => v !== value),
       },
     }),
-  }, el('span', {}, value), icon('close', 14))));
+  }, el('span', {}, isDateFacet(config, field) ? dateLabel(value) : value), icon('close', 14))));
   box.hidden = !chips.length;
   box.replaceChildren(...(chips.length ? [
     el('button', {
@@ -1951,6 +2016,76 @@ function renderResultList(root, config, data, state, ui, append = false) {
   }));
 }
 
+// A date facet: "Any time", the presets (with counts for keyword search) and
+// "Custom range", which shows From and To date fields and an Apply button.
+function dateFacet(facet, {
+  selected, showCounts, id, apply,
+}) {
+  const custom = Boolean(selected) && !DATE_PRESETS.some(([k]) => k === selected);
+  const [from, to] = custom ? selected.split('..') : ['', ''];
+  // The counted ranges come back oldest first; match each preset by its start.
+  const now = Date.now();
+  const countOf = (key) => {
+    const start = presetStart(key, now).getTime();
+    return facet.items.find((item) => Math.abs(new Date(item.from.replace(/Z$/, '')).getTime() - start) < 5 * 60000)?.count;
+  };
+  // With a range applied, the server counts within it, so counts would mislead.
+  const counted = showCounts && !selected;
+  const range = el('div', { className: 'sb-date-range', hidden: !custom });
+  const option = (value, label, count) => el('li', {}, el(
+    'label',
+    { className: `sb-facet-option${value && value === (custom ? 'custom' : selected) ? ' is-active' : ''}` },
+    el('input', {
+      type: 'radio',
+      name: id,
+      value,
+      checked: value === (custom ? 'custom' : selected),
+      'data-key': `${facet.field}:${value}`,
+      onChange: () => {
+        if (value === 'custom') {
+          range.hidden = false;
+          range.querySelector('input').focus();
+        } else {
+          apply(value);
+        }
+      },
+    }),
+    el('span', { className: 'sb-facet-name' }, label),
+    counted && count !== undefined ? el('span', { className: 'sb-count' }, count.toLocaleString()) : null,
+  ));
+  const today = sbTime(new Date()).slice(0, 10);
+  const field = (label, value) => el('label', {}, label, el('input', {
+    type: 'date', className: 'sb-date-input', value, max: today,
+  }));
+  const fromField = field('From', from);
+  const toField = field('To', to);
+  const [fromInput, toInput] = [fromField, toField].map((f) => f.querySelector('input'));
+  const applyButton = el('button', { type: 'button', className: 'sb-date-apply' }, 'Apply');
+  const check = () => {
+    applyButton.disabled = (!fromInput.value && !toInput.value)
+      || Boolean(fromInput.value && toInput.value && fromInput.value > toInput.value);
+    toInput.min = fromInput.value;
+  };
+  [fromInput, toInput].forEach((input) => input.addEventListener('input', check));
+  applyButton.addEventListener('click', () => apply(`${fromInput.value}..${toInput.value}`));
+  check();
+  range.append(fromField, toField, applyButton);
+
+  return el(
+    'div',
+    { className: 'sb-facet' },
+    el('h4', { id }, facet.label),
+    el(
+      'ul',
+      { role: 'radiogroup', 'aria-labelledby': id },
+      option('', 'Any time'),
+      DATE_PRESETS.map(([key, label]) => option(key, label, countOf(key))),
+      option('custom', 'Custom range'),
+    ),
+    range,
+  );
+}
+
 function renderFacets(root, config, data, state) {
   const facetsEl = root.querySelector('.sb-facets');
   const selectedIn = (field) => values(state.filters[field]);
@@ -1984,13 +2119,21 @@ function renderFacets(root, config, data, state) {
   if (root.sbFacetView?.query !== state.query) {
     root.sbFacetView = { query: state.query, fields: {} };
   }
-  const apply = (field, next) => root.sbRun({
-    ...state, page: 1, filters: { ...state.filters, [field]: next },
-  });
+  // Builds on the latest search, which may not have rendered yet, so a quick
+  // second pick keeps the first.
+  const apply = (field, next) => {
+    const base = root.sbCurrent || state;
+    root.sbRun({ ...base, page: 1, filters: { ...base.filters, [field]: next } });
+  };
 
   // Checkbox facets take any number of values; the rest are radios with "All".
   details.append(...groups.map((facet) => {
     const { field } = facet;
+    if (isDateFacet(config, field)) {
+      return dateFacet(facet, {
+        selected: selectedIn(field)[0] || '', showCounts, id: `${instance}-facet-${field}`, apply: (v) => apply(field, values(v)),
+      });
+    }
     const selected = selectedIn(field);
     const multi = config.checkboxFacets.includes(field);
     const headingId = `${instance}-facet-${field}`;
@@ -3417,8 +3560,10 @@ export function mount(root, rawConfig) {
   const run = async (state, { append = false } = {}) => {
     if (!state.query) return;
     current = state;
+    root.sbCurrent = state;
     controller?.abort();
     controller = new AbortController();
+    const mine = controller;
     input.value = state.query;
     writeUrlState(config, state);
     // "*" lists everything: there's no question to answer.
@@ -3468,7 +3613,8 @@ export function mount(root, rawConfig) {
       root.querySelector('.sb-pagination').replaceChildren();
       ['.sb-sort', '.sb-selected', '.sb-empty'].forEach(hide);
     } finally {
-      root.removeAttribute('aria-busy');
+      // A search replaced by a newer one leaves the busy state to that one.
+      if (controller === mine) root.removeAttribute('aria-busy');
     }
   };
   root.sbRun = run;

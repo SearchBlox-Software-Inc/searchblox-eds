@@ -2424,3 +2424,63 @@ html.sb-assist-open {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* Date facet: a custom range picked with the browser's own date fields. */
+.searchblox-search .sb-date-range {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0 26px;
+}
+
+.searchblox-search .sb-date-range[hidden] {
+  display: none;
+}
+
+.searchblox-search .sb-date-range label {
+  display: grid;
+  gap: 4px;
+  color: var(--_sb-muted);
+  font-size: 0.8rem;
+}
+
+.searchblox-search .sb-date-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: var(--sb-radius, 8px);
+  background: var(--_sb-surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.searchblox-search .sb-date-input:focus-visible {
+  outline: 2px solid var(--_sb-accent-text);
+  outline-offset: 2px;
+}
+
+.searchblox-search .sb-date-apply {
+  justify-self: start;
+  height: 32px;
+  margin: 0;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--sb-radius, 8px);
+  background: var(--_sb-accent);
+  color: var(--_sb-accent-contrast);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-date-apply:hover:not(:disabled) {
+  background: var(--_sb-accent-hover);
+}
+
+.searchblox-search .sb-date-apply:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
