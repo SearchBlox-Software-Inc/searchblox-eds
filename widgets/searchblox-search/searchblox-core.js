@@ -51,6 +51,8 @@ const DEFAULTS = {
   aiMode: '',
   chatSuggestions: false,
   chatReferences: false,
+  featured: true,
+  urlDisplay: true,
 };
 
 const FACET_LABELS = {
@@ -68,6 +70,8 @@ const FACET_SHOWN = 5;
 const FACET_SEARCH_MIN = 5;
 const HYBRID_MAX_PAGE_SIZE = 50;
 const SUGGEST_DELAY = 200;
+// As in the SearchBlox plugin, suggestions start at 3 characters.
+const SUGGEST_MIN = 3;
 // SmartFAQs, as in the SearchBlox search plugin: 3 shown above the results (up to
 // 10 with "Show all"), 3 in the suggestions once 3 characters are typed, answers
 // cut to 150 characters until "Show more".
@@ -111,6 +115,8 @@ const CHAT_SUGGEST_MIN = 3;
 const SORTS = [['relevance', 'Relevance'], ['date', 'Date']];
 
 let instanceCount = 0;
+// The page's own title, before searches put the query in front of it.
+const baseTitle = typeof document === 'undefined' ? '' : document.title;
 
 // ------------------------------------------------------------------
 // Config
@@ -207,6 +213,8 @@ export function normaliseConfig(raw = {}) {
     aiMode: `${flat.aimode || ''}`.trim(),
     chatSuggestions: toBool(flat.chatsuggestions, DEFAULTS.chatSuggestions),
     chatReferences: toBool(flat.chatreferences, DEFAULTS.chatReferences),
+    featured: toBool(flat.featured, DEFAULTS.featured),
+    urlDisplay: toBool(flat.urldisplay, DEFAULTS.urlDisplay),
   };
 }
 
@@ -395,11 +403,29 @@ function highlighted(text) {
   return frag;
 }
 
-// `text` with the first match of what was typed marked, for suggestion lists.
+// highlighted(), cut to `max` characters of text (with "…") if longer.
+function highlightedClip(text, max) {
+  const frag = document.createDocumentFragment();
+  let left = max;
+  `${text}`.split(/(<highlight>.*?<\/highlight>)/gi).forEach((part) => {
+    if (left <= 0 || !part) return;
+    const match = part.match(/^<highlight>(.*?)<\/highlight>$/i);
+    const plain = stripTags(match ? match[1] : part);
+    const kept = plain.length > left ? `${plain.slice(0, left).trimEnd()}…` : plain;
+    left -= plain.length;
+    frag.append(match ? el('mark', {}, kept) : kept);
+  });
+  return frag;
+}
+
+// `text` with what was typed in bold wherever it appears, as the SearchBlox
+// plugin shows suggestions.
 function matchHighlight(text, typed) {
-  const at = text.toLowerCase().indexOf(typed.toLowerCase());
-  if (at < 0 || !typed) return text;
-  return [text.slice(0, at), el('mark', {}, text.slice(at, at + typed.length)), text.slice(at + typed.length)];
+  if (!typed) return text;
+  const escaped = typed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.split(new RegExp(`(${escaped})`, 'gi'))
+    .map((part, i) => (i % 2 ? el('strong', {}, part) : part))
+    .filter(Boolean);
 }
 
 function safeUrl(url) {
@@ -411,10 +437,15 @@ function safeUrl(url) {
   }
 }
 
+// As the SearchBlox plugin shows them: "Oct 05, 2026", in UTC.
+const DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'UTC', month: 'short', day: '2-digit', year: 'numeric',
+});
+
 function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return DATE_FORMAT.format(date);
 }
 
 function displayUrl(url) {
@@ -432,8 +463,9 @@ function displayUrl(url) {
 
 // The events the SearchBlox search plugin logs, so the console's analytics cover
 // this widget. keepalive lets a click's log finish after the browser leaves the page.
-export function track(config, path, body) {
-  if (!config.analytics) return;
+// `always` sends it even with `analytics` off, as the plugin does for chat actions.
+export function track(config, path, body, always = false) {
+  if (!config.analytics && !always) return;
   fetch(`${config.domain}${path}`, {
     method: 'POST',
     keepalive: true,
@@ -520,8 +552,7 @@ function dateRange(value, now) {
   return `[${day.test(from) ? `${from}T00:00:00` : '*'}TO${day.test(to) ? `${to}T23:59:59` : '*'}]`;
 }
 
-const formatDay = (value) => new Date(`${value}T00:00:00`)
-  .toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const formatDay = (value) => formatDate(`${value}T00:00:00Z`);
 
 // How a date facet's value reads on its chip.
 function dateLabel(value) {
@@ -550,10 +581,27 @@ export function buildSearchUrl(config, state) {
   params.set('query', state.query || '*');
   params.set('page', `${state.page || 1}`);
   params.set('pagesize', `${config.pageSize}`);
-  params.set('sort', state.sort || config.sort);
-  // Date sorting is newest first unless `sortdir` is "asc".
-  if (state.sort === 'date') params.set('sortdir', state.sortdir || 'desc');
+  // As in the SearchBlox plugin, relevance is the console's manual ranking
+  // (mrank) first, then relevance. Date sorting is newest first unless `sortdir`
+  // is "asc".
+  const sort = state.sort || config.sort;
+  if (sort === 'relevance') {
+    params.set('sort', 'mrank');
+    params.set('sortdir', 'asc');
+    params.set('sort1', 'relevance');
+    params.set('sortdir1', 'desc');
+  } else {
+    params.set('sort', sort);
+    if (sort === 'date') params.set('sortdir', state.sortdir || 'desc');
+  }
   params.set('public', 'true');
+  // The plugin's other request settings: the WEB tuning template, SmartFAQs
+  // left out of search results (they have their own call), the suppression
+  // list applied, and whether to return featured results.
+  params.set('tunetemplate', 'WEB');
+  params.set('smartfaqdisable', 'true');
+  params.set('ignoreSuppressionList', 'false');
+  params.set('adsDisplay', `${config.featured}`);
   config.collections.forEach((col) => params.append('col', col));
 
   // Date facets count each preset range, and a selected range filters only when
@@ -674,7 +722,10 @@ export function parseResponse(data = {}) {
   return {
     hits: Number(data.hits) || 0,
     currentPage: Number(data.currentPage) || 1,
-    lastPage: Number(data.lastPage) || 1,
+    // 0 when the server leaves it out; the pagination works it out from hits.
+    lastPage: Number(data.lastPage) || 0,
+    // false when SearchBlox says not to highlight matches.
+    highlight: data.highlight !== false,
     suggest: data.suggest || '',
     time: data.time,
     pcode: data.pcode || '',
@@ -690,21 +741,25 @@ export function parseResponse(data = {}) {
   };
 }
 
+// A failed request throws with the server's own message when it sends one
+// (e.g. "No Public Collection Found to Search").
+async function checked(res) {
+  if (res.ok) return res.json();
+  const body = await res.json().catch(() => ({}));
+  throw new Error(body.message || `SearchBlox responded with ${res.status}`);
+}
+
 async function getJson(url, signal) {
-  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`SearchBlox responded with ${res.status}`);
-  return res.json();
+  return checked(await fetch(url, { signal, headers: { Accept: 'application/json' } }));
 }
 
 async function postJson(url, body, signal) {
-  const res = await fetch(url, {
+  return checked(await fetch(url, {
     method: 'POST',
     signal,
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`SearchBlox responded with ${res.status}`);
-  return res.json();
+  }));
 }
 
 export async function search(config, state, signal) {
@@ -782,13 +837,16 @@ const samePage = (a, b) => (a.url && b.url
   : a.uid === b.uid);
 
 // AI recommendations: an LLM picks results related to the titles of the last
-// few results the visitor opened.
-export async function recommendations(config, { titles, query }, signal) {
+// few results the visitor opened. As in the SearchBlox plugin, they come from the
+// collections picked in a Collection filter (`cnames`, by name), or else the
+// configured ones.
+export async function recommendations(config, { titles, query, cnames = [] }, signal) {
+  const scope = config.collections.length ? { col: config.collections } : {};
   const data = await postJson(`${config.domain}/rest/v2/api/recommendations`, {
     viewedPageTitles: titles,
     numberOfRecommendations: RECOMMENDATIONS_SHOWN,
-    originalQuery: query || '',
-    ...(config.collections.length ? { col: config.collections } : {}),
+    originalQuery: query && query !== '*' ? query : '',
+    ...(cnames.length ? { cname: cnames } : scope),
   }, signal);
   return {
     sessionId: data.sessionId || '',
@@ -899,13 +957,21 @@ export async function overview(config, query, signal) {
 
 // Chatbot answers cite sources inline as <source>url</source>. Database records
 // cite "db?url=..." sources, which have no page to link to, so they're dropped.
+// As in the SearchBlox plugin, an answer without <source> tags takes any bare
+// URLs in it as its sources (the text keeps them).
 export function parseChatAnswer(content) {
   const sources = [];
-  const text = `${content || ''}`.replace(/<source>\s*([\s\S]*?)\s*<\/source>/gi, (_, url) => {
+  const add = (url) => {
     const href = /^https?:\/\//i.test(url) ? safeUrl(url) : null;
     if (href && !sources.includes(href)) sources.push(href);
+  };
+  const text = `${content || ''}`.replace(/<source>\s*([\s\S]*?)\s*<\/source>/gi, (_, url) => {
+    add(url);
     return '';
   }).trim();
+  if (!sources.length) {
+    (text.match(/https?:\/\/[^\s)<>"]+/g) || []).forEach((url) => add(url.replace(/[.,;:]+$/, '')));
+  }
   return { text, sources };
 }
 
@@ -931,26 +997,54 @@ export function maskProfanity(text, rules = {}) {
   return text.replace(new RegExp(`\\b(?:${escaped.join('|')})\\b`, 'gi'), '#%*!');
 }
 
-// The console's "mask sensitive data" setting: hide these before the question
-// leaves the browser. SSNs go before phone numbers, which would also match them.
-const SENSITIVE = [
-  ['bankingCards', /\b(?:\d[ -]?){12,18}\d\b/g],
-  ['emailIds', /[\w.%+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/gi],
-  ['ssn', /\b\d{3}-\d{2}-\d{4}\b/g],
-  ['phoneNumbers', /\+?\d[\d\s().-]{7,}\d/g],
-];
+// The console's "mask sensitive data" setting, with the SearchBlox plugin's
+// patterns: hide these before the question leaves the browser.
+const SENSITIVE = {
+  bankingCards: [
+    /\d{4}-\d{4}-\d{4}-\d{4}/g, /\d{4}\s\d{4}\s\d{4}\s\d{4}/g, /\d{4}\.\d{4}\.\d{4}\.\d{4}/g,
+    /\d{4}-\d{6}-\d{5}/g, /\d{4}\s\d{6}\s\d{5}/g, /\d{4}\.\d{6}\.\d{5}/g,
+    /\d{4}-\d{6}-\d{4}/g, /\d{4}\s\d{6}\s\d{4}/g, /\d{4}\.\d{6}\.\d{4}/g,
+    /\d{19}/g, /\d{16}/g, /\d{15}/g,
+  ],
+  phoneNumbers: [
+    /\b\d{3}-\d{4}\b/g, /\b\d{3}-\d{3}-\d{4}\b/g, /\b\d{3}[-\u2011)]?\d{7}\b/g, /\b\d{10}\b/g,
+    /\(\d{3}\)\d{3}[-\u2011)]?\d{4}/g, /\(\d{3}\)[-\u2011)]?\d{3}-\d{4}/g,
+    /\(\d{3}\)(?:[-\u2011)]?)?\d{3}-\d{4}/g, /\(\d{3}\)[-\u2011)]?\d{7}/g,
+    /\b1[-\u2011)]?\d{3}[-\u2011)]?\d{3}[-\u2011)]?\d{4}\b/g, /\b1-\d{3}-\d{7}\b/g,
+    /\b1-\d{10}\b/g, /\b\d{11}\b/g, /\b1\(\d{3}\)\d{3}-\d{4}\b/g, /\b1\(\d{3}\)-\d{3}-\d{4}\b/g,
+    /\b1\(\d{3}\)-\d{7}\b/g, /\b1-\(\d{3}\)\d{3}-\d{4}\b/g, /\b1-\(\d{3}\)-\d{3}-\d{4}\b/g,
+    /\b1-\(\d{3}\)-\d{7}\b/g,
+  ],
+  ssn: [/\d{3}-\d{2}-\d{4}/g, /\d{3}\.\d{2}\.\d{4}/g, /\d{3}\s\d{2}\s\d{4}/g, /\d{9}/g],
+};
+const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+
+// A console pattern: "/x/i", "x/i" or plain "x". Always global, so every match
+// is masked. Returns null for one this browser can't compile.
+function patternOf(value) {
+  const str = `${value}`;
+  const literal = /^\/(.*)\/([a-z]*)$/.exec(str);
+  const slash = str.lastIndexOf('/');
+  let [source, flags] = [str, ''];
+  if (literal && /^[dgimsuvy]*$/.test(literal[2])) [, source, flags] = literal;
+  else if (slash > 0 && /^[dgimsuvy]+$/.test(str.slice(slash + 1))) [source, flags] = [str.slice(0, slash), str.slice(slash + 1)];
+  try {
+    return new RegExp(source, flags.includes('g') ? flags : `${flags}g`);
+  } catch {
+    return null;
+  }
+}
 
 export function maskSensitive(text, rules = {}) {
   if (!rules.maskSensitiveData) return text;
-  const patterns = SENSITIVE.filter(([key]) => rules[key] !== false).map(([, re]) => re);
-  (rules.additionalPatterns || []).forEach((p) => {
-    try {
-      patterns.push(new RegExp(p, 'g'));
-    } catch {
-      // Ignore patterns this browser can't compile.
-    }
-  });
-  return patterns.reduce((out, re) => out.replace(re, '####'), text);
+  const patterns = [
+    ...Object.entries(SENSITIVE).flatMap(([key, list]) => (rules[key] === false ? [] : list)),
+    ...(rules.additionalPatterns || []).map(patternOf).filter(Boolean),
+  ];
+  // Longer patterns first, so a card number isn't half-matched as a phone number.
+  patterns.sort((a, b) => b.source.length - a.source.length);
+  const start = rules.emailIds === false ? text : text.replace(EMAIL, '####');
+  return patterns.reduce((out, re) => out.replace(re, '####'), start);
 }
 
 const chatUrl = (config, path) => `${config.domain}/ui/v1/chatbot/${path}`;
@@ -1000,13 +1094,6 @@ export async function aiModeAsk(config, { question, conversationId }, signal) {
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error(data.message || 'Empty AI Mode response');
   const answer = parseChatAnswer(message.content);
-  // Without <source> tags, any bare URLs in the answer are its sources.
-  if (!answer.sources.length) {
-    (answer.text.match(/https?:\/\/[^\s)<>"]+/g) || []).forEach((url) => {
-      const href = safeUrl(url.replace(/[.,;:]+$/, ''));
-      if (href && !answer.sources.includes(href)) answer.sources.push(href);
-    });
-  }
   return {
     id: data.id,
     conversationId: data.conversation_id,
@@ -1034,9 +1121,17 @@ export async function documentLookup(config, urls, signal) {
 function readUrlState(config) {
   const params = new URLSearchParams(window.location.search);
   const filters = {};
+  // Filters are written as the SearchBlox plugin writes them (f.field.filter);
+  // the older f.field form still reads. A plugin date range ([...TO...]) becomes
+  // a custom range.
   config.facets.forEach(({ field }) => {
-    const selected = params.getAll(`f.${field}`).filter(Boolean);
-    if (selected.length) filters[field] = selected;
+    const selected = [...params.getAll(`f.${field}.filter`), ...params.getAll(`f.${field}`)]
+      .filter(Boolean)
+      .map((v) => {
+        const range = /^\[(\d{4}-\d{2}-\d{2}|\*)\S*?TO(\d{4}-\d{2}-\d{2}|\*)/.exec(v);
+        return range ? `${range[1].replace('*', '')}..${range[2].replace('*', '')}` : v;
+      });
+    if (selected.length) filters[field] = [...new Set(selected)];
   });
   const sort = SORTS.some(([value]) => value === params.get('sort')) ? params.get('sort') : '';
   return {
@@ -1077,7 +1172,8 @@ function writeUrlState(config, state) {
   }
   config.facets.forEach(({ field }) => {
     url.searchParams.delete(`f.${field}`);
-    values(state.filters[field]).forEach((v) => url.searchParams.append(`f.${field}`, v));
+    url.searchParams.delete(`f.${field}.filter`);
+    values(state.filters[field]).forEach((v) => url.searchParams.append(`f.${field}.filter`, v));
   });
   window.history.replaceState(null, '', url);
 }
@@ -1160,12 +1256,13 @@ function chatActionLink(config, action) {
       download: action.actionType === 'download' ? '' : undefined,
       target: href.startsWith('http') ? '_blank' : undefined,
       rel: 'noopener',
-      onClick: () => track(config, '/ui/v1/analytics/ca', { uid: action.uid }),
+      onClick: () => track(config, '/ui/v1/analytics/ca', { uid: action.uid }, true),
     }, action.buttonDisplay || resource),
   );
 }
 
 // Thumbs up/down; `vote(action)` sends 'upvote' or 'downvote' and returns a promise.
+// As in the plugin, a vote only sticks when the server confirms it.
 function votes(vote) {
   const buttons = [['upvote', 'up', 'Helpful'], ['downvote', 'down', 'Not helpful']].map(([action, name, label]) => el('button', {
     type: 'button',
@@ -1178,7 +1275,10 @@ function votes(vote) {
       if (button.getAttribute('aria-disabled')) return;
       buttons.forEach((b) => b.setAttribute('aria-disabled', 'true'));
       vote(action)
-        .then(() => button.setAttribute('aria-pressed', 'true'))
+        .then((res) => {
+          if (res?.success === false) throw new Error('Vote not recorded');
+          button.setAttribute('aria-pressed', 'true');
+        })
         .catch(() => buttons.forEach((b) => b.removeAttribute('aria-disabled')));
     },
   }, icon(name)));
@@ -1990,7 +2090,7 @@ function renderResultList(root, config, data, state, ui, append = false) {
           ),
           // Both are cut short by CSS; the tooltip shows the full text.
           shown.description ? el('p', { className: 'sb-result-desc', title: stripTags(shown.description) }, highlighted(shown.description)) : null,
-          href ? el('div', { className: 'sb-result-url', title: href }, href) : null,
+          href && config.urlDisplay ? el('div', { className: 'sb-result-url', title: href }, href) : null,
           shown.topics?.length ? topicList(config, shown.topics, ui) : null,
         ),
         r.thumbnail ? el('img', {
@@ -2086,9 +2186,13 @@ function dateFacet(facet, {
   );
 }
 
-function renderFacets(root, config, data, state) {
+// On narrow layouts, as in the SearchBlox plugin, picks are held in `draft`
+// until Apply (or dropped with Cancel) instead of searching on each one.
+function renderFacets(root, config, data, state, draft = null) {
   const facetsEl = root.querySelector('.sb-facets');
-  const selectedIn = (field) => values(state.filters[field]);
+  const narrow = root.clientWidth < WIDE_LAYOUT;
+  const filters = draft || state.filters;
+  const selectedIn = (field) => values(filters[field]);
   // Hybrid search counts facet values over a wider match set than the results it
   // returns (e.g. 232 next to 50 results), so counts are only shown for keyword search.
   const showCounts = config.vectorWeight === 0;
@@ -2122,6 +2226,10 @@ function renderFacets(root, config, data, state) {
   // Builds on the latest search, which may not have rendered yet, so a quick
   // second pick keeps the first.
   const apply = (field, next) => {
+    if (narrow) {
+      renderFacets(root, config, data, state, { ...filters, [field]: next });
+      return;
+    }
     const base = root.sbCurrent || state;
     root.sbRun({ ...base, page: 1, filters: { ...base.filters, [field]: next } });
   };
@@ -2227,6 +2335,23 @@ function renderFacets(root, config, data, state) {
     );
   }));
 
+  const pending = draft && config.facets
+    .some(({ field }) => `${values(draft[field])}` !== `${values(state.filters[field])}`);
+  if (pending) {
+    details.append(el(
+      'div',
+      { className: 'sb-filters-actions' },
+      el('button', {
+        type: 'button', className: 'sb-link-button', onClick: () => renderFacets(root, config, data, state),
+      }, 'Cancel'),
+      el('button', {
+        type: 'button',
+        className: 'sb-date-apply',
+        onClick: () => root.sbRun({ ...(root.sbCurrent || state), page: 1, filters: draft }),
+      }, 'Apply'),
+    ));
+  }
+
   if (focusedKey) {
     [...facetsEl.querySelectorAll('input')].find((input) => input.dataset.key === focusedKey)?.focus();
   }
@@ -2234,7 +2359,7 @@ function renderFacets(root, config, data, state) {
 
 function renderPagination(root, config, data, state) {
   const nav = root.querySelector('.sb-pagination');
-  const last = Math.max(1, data.lastPage);
+  const last = Math.max(1, data.lastPage || Math.ceil(data.hits / config.pageSize));
   if (last <= 1 || (config.loadMore && state.page >= last)) {
     nav.replaceChildren();
     return;
@@ -2266,20 +2391,22 @@ function renderPagination(root, config, data, state) {
     onClick: go(page),
   }, `${page}`);
 
-  const start = Math.max(1, state.page - PAGE_WINDOW);
-  const end = Math.min(last, state.page + PAGE_WINDOW);
+  // As in the SearchBlox plugin: up to 5 pages around the current one, and no
+  // previous/next button on the first/last page.
+  const start = Math.max(1, Math.min(state.page - PAGE_WINDOW, last - PAGE_WINDOW * 2));
+  const end = Math.min(last, start + PAGE_WINDOW * 2);
   const pages = [];
   for (let p = start; p <= end; p += 1) pages.push(pageButton(p));
 
-  nav.replaceChildren(
-    el('button', {
-      type: 'button', className: 'sb-page sb-page-step', 'aria-label': 'Previous page', title: 'Previous page', disabled: state.page <= 1, onClick: go(state.page - 1),
-    }, icon('chevronLeft', 20)),
+  nav.replaceChildren(...[
+    state.page > 1 ? el('button', {
+      type: 'button', className: 'sb-page sb-page-step', 'aria-label': 'Previous page', title: 'Previous page', onClick: go(state.page - 1),
+    }, icon('chevronLeft', 20)) : null,
     ...pages,
-    el('button', {
-      type: 'button', className: 'sb-page sb-page-step', 'aria-label': 'Next page', title: 'Next page', disabled: state.page >= last, onClick: go(state.page + 1),
-    }, icon('chevronRight', 20)),
-  );
+    state.page < last ? el('button', {
+      type: 'button', className: 'sb-page sb-page-step', 'aria-label': 'Next page', title: 'Next page', onClick: go(state.page + 1),
+    }, icon('chevronRight', 20)) : null,
+  ].filter(Boolean));
 }
 
 // `ui` connects the cards to the mount: onOpen(result) when one is opened,
@@ -2291,9 +2418,15 @@ function renderResults(root, config, data, state, ui = {}) {
   const rel = config.newTab ? 'noopener' : undefined;
 
   const query = el('strong', {}, el('em', {}, state.query));
-  status.replaceChildren(...(data.hits
-    ? [`${data.hits.toLocaleString()} result${data.hits === 1 ? '' : 's'} for `, query]
-    : ['No results for ', query, '.']));
+  const count = `${data.hits.toLocaleString()} result${data.hits === 1 ? '' : 's'}`;
+  // "*" (an empty search) lists everything, so there's no query to name.
+  if (state.query === '*') status.replaceChildren(data.hits ? count : 'No results.');
+  else status.replaceChildren(...(data.hits ? [`${count} for `, query] : ['No results for ', query, '.']));
+  root.classList.toggle('sb-no-highlight', !data.highlight);
+  // The page title leads with the query, as the plugin's does, keeping the site's own.
+  if (config.syncUrl) {
+    document.title = state.query === '*' ? baseTitle : `${state.query} – ${baseTitle}`;
+  }
   // More like this: say which page, and offer the way back.
   if (state.mlt) {
     const like = el('strong', {}, el('em', {}, state.mlt.title || 'the selected page'));
@@ -2331,7 +2464,9 @@ function renderResults(root, config, data, state, ui = {}) {
   renderSelectedFilters(root, config, state);
   renderEmpty(root, config, data, state);
 
-  const featured = state.page === 1 ? data.featured.filter((f) => safeUrl(f.url)) : [];
+  // Featured results (`featured`), on page 1 of a real query, as in the plugin.
+  const featured = config.featured && state.page === 1 && state.query !== '*'
+    ? data.featured.filter((f) => f.title || safeUrl(f.url)) : [];
   featuredEl.hidden = featured.length === 0;
   featuredEl.replaceChildren(...featured.map((f) => el(
     'li',
@@ -2343,12 +2478,12 @@ function renderResults(root, config, data, state, ui = {}) {
       'div',
       {},
       el('span', { className: 'sb-badge' }, 'Featured'),
-      el('a', {
+      safeUrl(f.url) ? el('a', {
         href: safeUrl(f.url),
         target,
         rel,
         onClick: () => track(config, '/ui/v1/analytics/fr', { uid: f.uid, query: state.query }),
-      }, f.title || displayUrl(f.url)),
+      }, f.title || displayUrl(f.url)) : el('strong', {}, f.title),
       f.description ? el('p', {}, f.description) : null,
     ),
   )));
@@ -2435,10 +2570,10 @@ function renderOverview(root, config, ai, regenerate) {
 }
 
 // One FAQ as a <details>; FAQs sharing `group` open one at a time.
+// Answers keep the search's highlighting, as in the SearchBlox plugin.
 function faqItem(config, query, faq, group, open = false) {
-  const answer = stripTags(faq.answer);
-  const short = answer.length > FAQ_ANSWER_CHARS ? `${answer.slice(0, FAQ_ANSWER_CHARS).trimEnd()}…` : answer;
-  const answerText = el('span', {}, short);
+  const long = stripTags(faq.answer).length > FAQ_ANSWER_CHARS;
+  const answerText = el('span', {}, highlightedClip(faq.answer, FAQ_ANSWER_CHARS));
   const details = el(
     'details',
     { className: 'sb-faq', name: group, open },
@@ -2446,17 +2581,19 @@ function faqItem(config, query, faq, group, open = false) {
     el(
       'div',
       { className: 'sb-faq-body' },
-      el('p', {}, answerText, short === answer ? null : ' ', short === answer ? null : el('button', {
+      el('p', {}, answerText, long ? ' ' : null, long ? el('button', {
         type: 'button',
         className: 'sb-link-button',
         'aria-expanded': 'false',
         onClick: (e) => {
           const more = e.currentTarget.getAttribute('aria-expanded') !== 'true';
-          answerText.textContent = more ? answer : short;
+          answerText.replaceChildren(more
+            ? highlighted(faq.answer)
+            : highlightedClip(faq.answer, FAQ_ANSWER_CHARS));
           e.currentTarget.setAttribute('aria-expanded', `${more}`);
           e.currentTarget.textContent = more ? 'Show less' : 'Show more';
         },
-      }, 'Show more')),
+      }, 'Show more') : null),
       faq.url ? el('a', {
         className: 'sb-faq-url',
         href: faq.url,
@@ -2516,8 +2653,9 @@ function renderFaqs(root, config, query, { faqs, selected }) {
 
 // AI recommendations, between the SmartFAQs and the results. `recs` is
 // { items, sessionId, previous: [uids] } or null; `loading` shows placeholders
-// (or a note beside the heading while earlier recommendations are shown).
-function renderRecommendations(root, config, recs, { loading, query }) {
+// (or a note beside the heading while earlier recommendations are shown);
+// `fresh` announces a new set for 5 seconds, as the plugin does.
+function renderRecommendations(root, config, recs, { loading, fresh, query }) {
   const id = `${root.querySelector('.sb-input').id}-recs`;
   let section = root.querySelector('.sb-recs');
   if (!section) {
@@ -2534,6 +2672,10 @@ function renderRecommendations(root, config, recs, { loading, query }) {
   const target = config.newTab ? '_blank' : undefined;
   const rel = config.newTab ? 'noopener' : undefined;
   section.setAttribute('aria-busy', `${Boolean(loading)}`);
+  clearTimeout(root.sbRecsNotice);
+  if (fresh) {
+    root.sbRecsNotice = setTimeout(() => section.querySelector('.sb-recs-notice')?.remove(), 5000);
+  }
   section.replaceChildren(
     el(
       'h2',
@@ -2541,6 +2683,7 @@ function renderRecommendations(root, config, recs, { loading, query }) {
       icon('ai'),
       'Personalized AI-Recommended Results',
       loading && items.length ? el('span', { className: 'sb-recs-updating' }, 'Updating…') : null,
+      fresh ? el('span', { className: 'sb-recs-notice', role: 'status' }, 'New recommendations') : null,
     ),
     items.length ? el('ul', { className: 'sb-recs-list' }, items.map((r, i) => {
       const href = safeUrl(r.url);
@@ -2579,11 +2722,12 @@ function renderRecommendations(root, config, recs, { loading, query }) {
           isNew ? el('span', { className: 'sb-rec-new' }, icon('sparkles', 14), 'New') : null,
         ),
         r.description ? el('p', { className: 'sb-result-desc', title: stripTags(r.description) }, stripTags(r.description)) : null,
-        href ? el('div', { className: 'sb-result-url', title: href }, href) : null,
-        date || r.colname ? el(
+        href && config.urlDisplay ? el('div', { className: 'sb-result-url', title: href }, href) : null,
+        date || r.contenttype || r.colname ? el(
           'div',
           { className: 'sb-rec-details' },
           date ? el('span', { className: 'sb-result-detail', title: 'Last modified' }, icon('calendar', 14), date) : null,
+          r.contenttype ? el('span', { className: 'sb-result-detail', title: 'Content type' }, icon('file', 14), r.contenttype.toLowerCase()) : null,
           r.colname ? el('span', { className: 'sb-result-detail', title: 'Collection' }, icon('layers', 14), r.colname) : null,
         ) : null,
       );
@@ -2658,9 +2802,12 @@ function wireSuggestions(root, config, submit) {
       trending.length ? heading('trending', 'Trending searches') : null,
       ...trending.map((text) => option(text, () => pick(text))),
       faqs.length && items.length ? heading('search', 'Suggestions') : null,
-      ...items.map((text) => option(text, () => pick(text))),
+      ...items.map((text) => option(matchHighlight(text, typed), () => pick(text))),
       faqs.length ? heading('help', 'SmartFAQs') : null,
-      ...faqs.map((faq) => option(stripTags(faq.question), () => pickFaq(faq))),
+      ...faqs.map((faq) => option(
+        matchHighlight(stripTags(faq.question), typed),
+        () => pickFaq(faq),
+      )),
     ].filter(Boolean));
     list.hidden = false;
     input.setAttribute('aria-expanded', 'true');
@@ -2692,7 +2839,7 @@ function wireSuggestions(root, config, submit) {
       showTrending();
       return;
     }
-    if (query.length < 2 || !config.autosuggest) {
+    if (query.length < SUGGEST_MIN || !config.autosuggest) {
       close();
       return;
     }
@@ -3485,9 +3632,10 @@ export function mount(root, rawConfig) {
       hide('.sb-recs');
       return;
     }
-    const key = JSON.stringify([titles, config.collections]);
-    const show = (loading) => renderRecommendations(root, config, recs, {
-      loading, query: state.query,
+    const cnames = values(state.filters?.colname);
+    const key = JSON.stringify([titles, config.collections, cnames]);
+    const show = (loading, fresh = false) => renderRecommendations(root, config, recs, {
+      loading, fresh, query: state.query,
     });
     if (recs?.key === key) {
       show(false);
@@ -3496,7 +3644,7 @@ export function mount(root, rawConfig) {
     recController?.abort();
     recController = new AbortController();
     show(true);
-    recommendations(config, { titles, query: state.query }, recController.signal)
+    recommendations(config, { titles, query: state.query, cnames }, recController.signal)
       .then(({ sessionId, items }) => {
         // As in the plugin, an empty answer keeps the previous recommendations.
         recs = items.length
@@ -3505,7 +3653,7 @@ export function mount(root, rawConfig) {
           }
           : { ...(recs || { items: [] }), key };
         writeSession(RECOMMENDATIONS_KEY, recs);
-        show(false);
+        show(false, items.length > 0);
       })
       .catch((err) => {
         if (err.name === 'AbortError') return;
@@ -3564,7 +3712,7 @@ export function mount(root, rawConfig) {
     controller?.abort();
     controller = new AbortController();
     const mine = controller;
-    input.value = state.query;
+    input.value = state.query === '*' ? '' : state.query;
     writeUrlState(config, state);
     // "*" lists everything: there's no question to answer.
     const asked = state.query !== '*';
@@ -3608,7 +3756,12 @@ export function mount(root, rawConfig) {
         renderPagination(root, config, lastResults.data, current);
         return;
       }
-      root.querySelector('.sb-status').replaceChildren(el('span', { className: 'sb-error' }, 'Search is unavailable right now. Please try again.'));
+      // The same cases the SearchBlox plugin explains; anything else is generic.
+      const reason = err.message.toLowerCase();
+      let message = 'Search is unavailable right now. Please try again.';
+      if (reason.includes('no public collection')) message = 'There is no public collection available to search.';
+      else if (reason.includes('index_not_found')) message = 'The search index isn’t available. Please try again later.';
+      root.querySelector('.sb-status').replaceChildren(el('span', { className: 'sb-error' }, message));
       root.querySelector('.sb-results').replaceChildren();
       root.querySelector('.sb-pagination').replaceChildren();
       ['.sb-sort', '.sb-selected', '.sb-empty'].forEach(hide);
@@ -3622,10 +3775,10 @@ export function mount(root, rawConfig) {
   let aiMode;
 
   // `faq` is the uid of a SmartFAQ picked from the suggestions. A new query
-  // keeps the sort order. `ai` opens AI Mode on the results page instead.
+  // keeps the sort order. `ai` opens AI Mode on the results page instead. As
+  // in the SearchBlox plugin, an empty search lists everything ("*").
   const submit = (query, faq, ai = false) => {
-    const q = query.trim();
-    if (!q && !ai) return;
+    const q = query.trim() || (ai ? '' : '*');
     if (config.resultsPage) {
       const url = new URL(config.resultsPage, window.location.href);
       url.searchParams.set(config.queryParam, q);
