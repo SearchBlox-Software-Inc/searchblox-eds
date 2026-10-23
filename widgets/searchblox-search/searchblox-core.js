@@ -49,6 +49,7 @@ const DEFAULTS = {
   voiceSearch: false,
   aiMode: '',
   chatSuggestions: false,
+  chatReferences: false,
 };
 
 const FACET_LABELS = {
@@ -92,6 +93,9 @@ const TRENDING_LIMIT = 5;
 const AI_MODE_PASSAGES = 10;
 const CHAT_IDLE_MINUTES = 30;
 const CHAT_SUGGEST = 3;
+// Chat answers can list the top 2 search results for the question, as the
+// plugin's "Reference links".
+const CHAT_REFERENCES = 2;
 const CHAT_SUGGEST_MIN = 3;
 // Keyword search can sort by relevance or date; only date has a direction.
 const SORTS = [['relevance', 'Relevance'], ['date', 'Date']];
@@ -189,6 +193,7 @@ export function normaliseConfig(raw = {}) {
     voiceSearch: toBool(flat.voicesearch, DEFAULTS.voiceSearch),
     aiMode: `${flat.aimode || ''}`.trim(),
     chatSuggestions: toBool(flat.chatsuggestions, DEFAULTS.chatSuggestions),
+    chatReferences: toBool(flat.chatreferences, DEFAULTS.chatReferences),
   };
 }
 
@@ -250,6 +255,8 @@ const ICONS = {
   sortDesc: 'M4 6h9M4 12h7M4 18h7M15 15l3 3l3 -3M18 6v12',
   sortAsc: 'M4 6h7M4 12h7M4 18h9M15 9l3 -3l3 3M18 6v12',
   chevronDown: 'M6 9l6 6l6 -6',
+  related: 'M9.183 6.117a6 6 0 1 0 4.511 3.986M14.813 17.883a6 6 0 1 0 -4.496 -3.954',
+  link: 'M9 15l6 -6M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463',
 };
 
 function icon(name, size = 18) {
@@ -480,7 +487,8 @@ const faqAction = (config, query, uid, action) => track(config, '/rest/v2/api/sm
 
 /**
  * Builds the Search API URL. `state` = { query, page, filters: { field: [values] },
- * sort, sortdir, allTerms }. Several values of one field narrow the results:
+ * sort, sortdir, allTerms, mlt }. `mlt` ({ id, col }) asks for pages like that
+ * result ("More like this"), paged with XPC. Several values of one field narrow the results:
  * SearchBlox requires all of them. Hybrid search blends keyword and vector
  * (meaning) matching: `v.weight` is the vector share and `v.threshold` the
  * minimum similarity. As in the SearchBlox search plugin, hybrid search ORs the
@@ -507,6 +515,12 @@ export function buildSearchUrl(config, state) {
   Object.entries(state.filters || {}).forEach(([field, value]) => {
     values(value).forEach((v) => params.append(`f.${field}.filter`, v));
   });
+
+  if (state.mlt) {
+    params.set('mlt_id', state.mlt.id);
+    params.set('mlt_col', state.mlt.col);
+    params.set('XPC', `${state.page || 1}`);
+  }
 
   const hybrid = config.vectorWeight > 0;
   params.set('default', hybrid && !state.allTerms ? 'OR' : 'AND');
@@ -970,6 +984,9 @@ function readUrlState(config) {
     sortdir: sort === 'date' && params.get('sortdir') === 'asc' ? 'asc' : '',
     // "mode=ai" hands a question from a box-only instance to AI Mode.
     aiMode: params.get('mode') === 'ai',
+    mlt: params.get('mlt_id') && params.get('mlt_col')
+      ? { id: params.get('mlt_id'), col: params.get('mlt_col'), title: '' }
+      : null,
   };
 }
 
@@ -986,6 +1003,13 @@ function writeUrlState(config, state) {
   if (state.sortdir) url.searchParams.set('sortdir', state.sortdir);
   else url.searchParams.delete('sortdir');
   url.searchParams.delete('mode');
+  if (state.mlt) {
+    url.searchParams.set('mlt_id', state.mlt.id);
+    url.searchParams.set('mlt_col', state.mlt.col);
+  } else {
+    url.searchParams.delete('mlt_id');
+    url.searchParams.delete('mlt_col');
+  }
   config.facets.forEach(({ field }) => {
     url.searchParams.delete(`f.${field}`);
     values(state.filters[field]).forEach((v) => url.searchParams.append(`f.${field}`, v));
@@ -1279,7 +1303,16 @@ function mountChat(config) {
     const started = performance.now();
     try {
       const { useKg } = settings;
-      const answer = await chat(config, { question, conversationId, useKg }, controller.signal);
+      // `chatReferences`: the top search results for the question, fetched alongside.
+      const references = config.chatReferences
+        ? search(config, { query: question, page: 1, filters: {} }, controller.signal)
+          .then((data) => data.results.filter((r) => safeUrl(r.url)).slice(0, CHAT_REFERENCES))
+          .catch(() => [])
+        : [];
+      const [answer, refs] = await Promise.all([
+        chat(config, { question, conversationId, useKg }, controller.signal),
+        references,
+      ]);
       conversationId = answer.conversationId || conversationId;
       wait.remove();
       message('bot', {
@@ -1289,7 +1322,34 @@ function mountChat(config) {
           answer.sources.length ? el(
             'ol',
             { className: 'sb-chat-sources', 'aria-label': 'Sources' },
-            answer.sources.map((url) => el('li', {}, el('a', { href: url, target: '_blank', rel: 'noopener' }, displayUrl(url)))),
+            answer.sources.map((url) => el('li', {}, el('a', {
+              href: url, target: '_blank', rel: 'noopener',
+            }, displayUrl(url)))),
+          ) : null,
+          refs.length ? el(
+            'div',
+            { className: 'sb-chat-refs' },
+            el('p', { className: 'sb-chat-refs-title' }, 'Reference links'),
+            el('ul', {}, refs.map((r, i) => el('li', {}, el('a', {
+              href: safeUrl(r.url),
+              target: '_blank',
+              rel: 'noopener',
+              onClick: () => track(config, '/ui/v1/analytics/click', {
+                collection: r.col,
+                query: question,
+                title: stripTags(r.title),
+                uid: r.uid,
+                url: r.url,
+                pcode: getPcode() || undefined,
+                pos: i + 1,
+                page: 1,
+              }),
+            }, icon('link', 16), el(
+              'span',
+              {},
+              el('span', { className: 'sb-chat-ref-title' }, stripTags(r.title)),
+              el('span', { className: 'sb-chat-ref-url' }, displayUrl(r.url)),
+            ))))),
           ) : null,
         ],
         created: answer.created,
@@ -1852,6 +1912,16 @@ function renderResultList(root, config, data, state, ui, append = false) {
               }, highlighted(shown.title)) : highlighted(shown.title),
             ),
             picker ? assistButton(r, picker) : null,
+            // As in the plugin: web pages, for a real query.
+            ui.moreLikeThis && r.uid && r.contenttype.toLowerCase() === 'html' && state.query !== '*'
+              ? el('button', {
+                type: 'button',
+                className: 'sb-mlt',
+                title: 'More like this',
+                'aria-label': `More like ${stripTags(shown.title)}`,
+                onClick: () => ui.moreLikeThis(r),
+              }, icon('related', 16))
+              : null,
           ),
           // Both are cut short by CSS; the tooltip shows the full text.
           shown.description ? el('p', { className: 'sb-result-desc', title: stripTags(shown.description) }, highlighted(shown.description)) : null,
@@ -2081,8 +2151,21 @@ function renderResults(root, config, data, state, ui = {}) {
   status.replaceChildren(...(data.hits
     ? [`${data.hits.toLocaleString()} result${data.hits === 1 ? '' : 's'} for `, query]
     : ['No results for ', query, '.']));
-  // After a search with no results was retried (see mount): say what was searched.
-  if (state.original) {
+  // More like this: say which page, and offer the way back.
+  if (state.mlt) {
+    const like = el('strong', {}, el('em', {}, state.mlt.title || 'the selected page'));
+    status.replaceChildren(
+      `${data.hits.toLocaleString()} result${data.hits === 1 ? '' : 's'} like `,
+      like,
+      '. ',
+      el('button', {
+        type: 'button',
+        className: 'sb-link-button',
+        onClick: () => root.sbRun({ ...state, page: 1, mlt: null }),
+      }, `Back to results for ${state.query}`),
+    );
+  } else if (state.original) {
+    // After a search with no results was retried (see mount): say what was searched.
     status.append(`${data.hits ? '.' : ''} No results for `, el('strong', {}, el('em', {}, state.original)), '.');
     if (state.retry === 'suggest') {
       status.append(' ', el('button', {
@@ -3290,6 +3373,15 @@ export function mount(root, rawConfig) {
   };
 
   const ui = {
+    moreLikeThis: (r) => {
+      if (!current) return;
+      root.sbRun({
+        ...current,
+        page: 1,
+        mlt: { id: r.uid, col: r.col, title: stripTags(r.originalTitle || r.title) },
+      });
+      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
     onOpen: (r) => {
       if (!config.recommendations) return;
       const title = stripTags(r.title);
@@ -3341,7 +3433,7 @@ export function mount(root, rawConfig) {
     root.setAttribute('aria-busy', 'true');
     try {
       const data = await search(config, state, controller.signal);
-      if (!data.hits && !append && !state.retry) {
+      if (!data.hits && !append && !state.retry && !state.mlt) {
         const unquoted = state.query.replace(/"+/g, ' ').replace(/\s+/g, ' ').trim();
         const retry = state.query.includes('"') && unquoted
           ? { query: unquoted, allTerms: true, retry: 'quotes' }

@@ -2343,3 +2343,84 @@ html.sb-assist-open {
     animation: none;
   }
 }
+
+/* More like this: a small button after the result title. */
+.searchblox-search .sb-mlt {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--_sb-muted);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-mlt:hover {
+  background: var(--_sb-hover);
+  color: var(--_sb-accent-text);
+}
+
+/* Chat reference links (`chatReferences`): top search results under an answer. */
+.searchblox-search .sb-chat-refs {
+  min-width: 0;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--_sb-divider);
+}
+
+.searchblox-search .sb-chat-refs-title {
+  margin: 0 0 4px;
+  color: var(--_sb-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.searchblox-search .sb-chat-refs ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.searchblox-search .sb-chat-refs a {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.searchblox-search .sb-chat-refs a > span {
+  min-width: 0;
+}
+
+.searchblox-search .sb-chat-refs svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--_sb-accent-text);
+}
+
+.searchblox-search .sb-chat-ref-title {
+  display: block;
+  color: var(--_sb-accent-text);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.searchblox-search .sb-chat-refs a:hover .sb-chat-ref-title {
+  text-decoration: underline;
+}
+
+.searchblox-search .sb-chat-ref-url {
+  display: block;
+  overflow: hidden;
+  color: var(--_sb-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
