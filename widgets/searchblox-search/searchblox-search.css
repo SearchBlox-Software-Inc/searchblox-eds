@@ -147,7 +147,6 @@
   color: var(--_sb-muted);
   font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
   cursor: default;
 }
@@ -159,6 +158,7 @@
 
 .searchblox-search .sb-summary {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   margin-bottom: 28px;
@@ -242,7 +242,6 @@
   border-bottom: 2px solid var(--_sb-divider);
   font-size: 0.85rem;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--_sb-muted);
 }
 
@@ -589,7 +588,6 @@
   color: var(--_sb-muted);
   font-size: 0.8rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -597,7 +595,9 @@
   color: var(--_sb-accent-text);
 }
 
-.searchblox-search .sb-ai-text {
+.searchblox-search .sb-ai-text,
+.searchblox-search .sb-ai-points,
+.searchblox-search .sb-ai-sources {
   font-size: 0.95rem;
 }
 
@@ -862,15 +862,19 @@
 }
 
 .searchblox-search .sb-settings-title {
-  margin: 0 0 12px;
+  margin: 0 0 4px;
   font-size: 1rem;
   font-weight: 600;
 }
 
 .searchblox-search .sb-setting {
   display: grid;
-  gap: 6px;
-  margin-bottom: 16px;
+  gap: 8px;
+  padding: 14px 0;
+}
+
+.searchblox-search .sb-setting + .sb-setting {
+  border-top: 1px solid var(--_sb-divider);
 }
 
 .searchblox-search .sb-setting-label {
@@ -910,6 +914,7 @@
   gap: 12px;
   align-items: center;
   justify-content: flex-end;
+  margin-top: 6px;
 }
 
 .searchblox-search .sb-settings-apply {
@@ -939,7 +944,7 @@
   gap: 12px;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
+  padding: 13px 0;
   cursor: pointer;
 }
 
@@ -991,12 +996,6 @@
 .searchblox-search .sb-switch:focus-visible {
   outline: 2px solid var(--_sb-accent-text);
   outline-offset: 2px;
-}
-
-.searchblox-search .sb-setting-note {
-  display: block;
-  color: var(--_sb-muted);
-  font-size: 0.75rem;
 }
 
 .searchblox-search .sb-settings-list .sb-disabled .sb-setting-switch {
@@ -1311,7 +1310,6 @@
   font: inherit;
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
   line-height: 1.2;
 }
 
@@ -1343,7 +1341,6 @@
   color: var(--_sb-muted);
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -1365,24 +1362,46 @@
 
 /* SearchAI Assist (`assist`): the pick button on each card, the tray of picked
    results and the dialog. Tray and dialog live in their own host on <body>. */
+.searchblox-search .sb-result-heading .sb-result-title {
+  display: inline;
+}
+
 .searchblox-search .sb-assist-pick {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
-  margin: 0 0 0 auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--_sb-accent-text);
+  margin: 0 0 0 8px;
+  padding: 2px 10px 2px 6px;
+  border: 1px solid var(--_sb-accent);
+  border-radius: 999px;
+  background: var(--_sb-accent);
+  color: var(--_sb-accent-contrast);
   font: inherit;
-  font-weight: 600;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+  vertical-align: middle;
+  white-space: nowrap;
   cursor: pointer;
 }
 
+.searchblox-search .sb-assist-pick:hover {
+  border-color: var(--_sb-accent-hover);
+  background: var(--_sb-accent-hover);
+}
+
+.searchblox-search .sb-assist-pick[aria-pressed='true'] {
+  --_sb-assist-picked: color-mix(in srgb, var(--_sb-accent) 70%, #000);
+
+  border-color: var(--_sb-assist-picked);
+  background: var(--_sb-assist-picked);
+}
+
 .searchblox-search .sb-assist-pick:disabled {
+  border-color: var(--_sb-control-border);
+  background: transparent;
   color: var(--_sb-muted);
   cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .searchblox-search.sb-assist-host {
@@ -1639,7 +1658,7 @@ html.sb-assist-open {
 .searchblox-search .sb-assist-compose {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
 .searchblox-search .sb-assist-compose[hidden] {
@@ -1721,7 +1740,6 @@ html.sb-assist-open {
 .searchblox-search .sb-recs-updating {
   margin-left: 6px;
   font-weight: 400;
-  letter-spacing: 0;
   text-transform: none;
   animation: sb-pulse 1.5s ease-in-out infinite;
 }
@@ -1782,7 +1800,7 @@ html.sb-assist-open {
 .searchblox-search .sb-setting-modes {
   display: flex;
   gap: 16px;
-  padding: 0 0 10px;
+  padding: 0 0 14px;
   font-size: 0.8125rem;
 }
 
@@ -1805,6 +1823,523 @@ html.sb-assist-open {
 @media (prefers-reduced-motion: reduce) {
   .searchblox-search .sb-assist-wait,
   .searchblox-search .sb-recs-updating {
+    animation: none;
+  }
+}
+
+/* Sort menu (keyword search only), beside the results count. */
+.searchblox-search .sb-sort {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+  color: var(--_sb-muted);
+  font-size: 0.85rem;
+}
+
+.searchblox-search .sb-sort[hidden],
+.searchblox-search .sb-selected[hidden],
+.searchblox-search .sb-empty[hidden],
+.searchblox-search .sb-aimode[hidden],
+.searchblox-search .sb-chat-prompts[hidden],
+.searchblox-search .sb-empty-popular[hidden] {
+  display: none;
+}
+
+.searchblox-search .sb-sort-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.searchblox-search .sb-sort-select {
+  height: 34px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: var(--sb-radius, 8px);
+  background: var(--_sb-surface);
+  color: inherit;
+  font: inherit;
+  appearance: none;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-sort-wrap svg {
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+}
+
+.searchblox-search .sb-sort-select:focus-visible,
+.searchblox-search .sb-voice:focus-visible {
+  outline: 2px solid var(--_sb-accent-text);
+  outline-offset: 2px;
+}
+
+.searchblox-search .sb-sort-dirs {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: var(--sb-radius, 8px);
+}
+
+.searchblox-search .sb-sort-dir {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--_sb-muted);
+  cursor: pointer;
+}
+
+.searchblox-search .sb-sort-dir + .sb-sort-dir {
+  border-left: 1px solid var(--_sb-control-border);
+}
+
+.searchblox-search .sb-sort-dir:hover {
+  background: var(--_sb-hover);
+}
+
+.searchblox-search .sb-sort-dir[aria-pressed='true'] {
+  background: var(--_sb-accent-subtle);
+  color: var(--_sb-accent-text);
+}
+
+/* Selected filters as removable chips, with "Clear all". */
+.searchblox-search .sb-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.searchblox-search .sb-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 10px 4px 12px;
+  border: 1px solid var(--_sb-card-border);
+  border-radius: 999px;
+  background: var(--_sb-accent-subtle);
+  color: var(--_sb-accent-text);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-chip span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.searchblox-search .sb-chip svg {
+  flex: none;
+}
+
+.searchblox-search .sb-chip:hover {
+  border-color: var(--_sb-accent-text);
+}
+
+.searchblox-search .sb-chip-clear {
+  padding: 4px 12px;
+  border-color: var(--_sb-control-border);
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+}
+
+/* No results: tips and popular searches. */
+.searchblox-search .sb-empty {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  padding: 24px;
+  border: 1px solid var(--_sb-divider);
+  border-radius: calc(var(--sb-radius, 8px) * 2);
+}
+
+.searchblox-search .sb-empty > svg {
+  flex: none;
+  color: var(--_sb-accent-text);
+}
+
+.searchblox-search .sb-empty p {
+  margin: 0 0 6px;
+  color: var(--_sb-muted);
+}
+
+.searchblox-search .sb-empty .sb-empty-title {
+  color: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.searchblox-search .sb-empty-popular {
+  margin-top: 18px;
+}
+
+.searchblox-search .sb-empty-popular ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.searchblox-search .sb-empty-popular button,
+.searchblox-search .sb-chat-prompts button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-empty-popular button:hover,
+.searchblox-search .sb-chat-prompts button:hover {
+  background: var(--_sb-hover);
+}
+
+.searchblox-search .sb-empty-popular svg {
+  color: var(--_sb-accent-text);
+}
+
+/* Load more, in place of the page numbers. */
+.searchblox-search .sb-load-more {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  height: 40px;
+  margin: 0;
+  padding: 0 24px;
+  border: 1px solid var(--_sb-accent-text);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--_sb-accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-load-more:hover:not(:disabled) {
+  background: var(--_sb-accent-subtle);
+}
+
+.searchblox-search .sb-load-more:disabled {
+  cursor: default;
+}
+
+.searchblox-search .sb-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentcolor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: sb-spin 0.8s linear infinite;
+}
+
+@keyframes sb-spin {
+  to { rotate: 360deg; }
+}
+
+/* Voice search: a microphone inside the search box. */
+.searchblox-search.sb-has-voice .sb-form .sb-input {
+  padding-right: 48px;
+}
+
+.searchblox-search .sb-voice {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--_sb-accent-text);
+  translate: 0 -50%;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-voice:hover {
+  background: var(--_sb-hover);
+}
+
+.searchblox-search .sb-voice:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.searchblox-search .sb-voice.is-listening {
+  background: var(--_sb-accent);
+  color: var(--_sb-accent-contrast);
+  animation: sb-listen 1.4s ease-in-out infinite;
+}
+
+@keyframes sb-listen {
+  50% { box-shadow: 0 0 0 6px var(--_sb-accent-subtle); }
+}
+
+/* AI Mode: a button beside the search button, and the conversation that
+   replaces the results while it's on. */
+.searchblox-search .sb-aimode-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: var(--sb-radius, 8px);
+  background: var(--_sb-surface);
+  color: var(--_sb-accent-text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-aimode-toggle:hover {
+  background: var(--_sb-accent-subtle);
+}
+
+.searchblox-search .sb-aimode-toggle[aria-pressed='true'] {
+  border-color: var(--_sb-accent);
+  background: var(--_sb-accent);
+  color: var(--_sb-accent-contrast);
+}
+
+@container (width < 560px) {
+  .searchblox-search .sb-aimode-toggle span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .searchblox-search .sb-aimode-toggle {
+    padding: 0 11px;
+  }
+}
+
+/* Narrow layouts with extra buttons: the search box gets its own row. */
+@container (width < 480px) {
+  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) {
+    flex-wrap: wrap;
+  }
+
+  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-input-wrap {
+    flex-basis: 100%;
+  }
+
+  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-submit {
+    flex: 1;
+  }
+}
+
+.searchblox-search.sb-aimode-on > :not(.sb-form, .sb-aimode) {
+  display: none;
+}
+
+.searchblox-search .sb-aimode {
+  padding: 18px 24px 20px;
+  border: 1px solid var(--_sb-divider);
+  border-radius: calc(var(--sb-radius, 8px) * 3);
+  line-height: 1.6;
+}
+
+.searchblox-search .sb-aimode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.searchblox-search .sb-aimode-empty {
+  padding: 32px 0 24px;
+  text-align: center;
+}
+
+.searchblox-search .sb-aimode-empty[hidden] {
+  display: none;
+}
+
+.searchblox-search .sb-aimode-empty svg {
+  color: var(--_sb-accent-text);
+}
+
+.searchblox-search .sb-aimode-empty p {
+  margin: 0 0 6px;
+  color: var(--_sb-muted);
+}
+
+.searchblox-search .sb-aimode-empty .sb-aimode-empty-title {
+  color: inherit;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.searchblox-search .sb-aimode-thread {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.searchblox-search .sb-aimode-turn {
+  padding: 20px 0;
+  scroll-margin-top: 80px;
+}
+
+.searchblox-search .sb-aimode-turn + .sb-aimode-turn {
+  border-top: 1px solid var(--_sb-divider);
+}
+
+.searchblox-search .sb-aimode-question {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.searchblox-search .sb-aimode-answer {
+  font-size: 0.95rem;
+}
+
+.searchblox-search .sb-aimode-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.searchblox-search .sb-aimode-meta .sb-ai-time {
+  margin: 0;
+}
+
+.searchblox-search .sb-aimode-refs {
+  margin-top: 14px;
+  border: 1px solid var(--_sb-divider);
+  border-radius: var(--sb-radius, 8px);
+  font-size: 0.875rem;
+}
+
+.searchblox-search .sb-aimode-refs > summary {
+  padding: 8px 12px;
+  color: var(--_sb-accent-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-aimode-refs ul {
+  margin: 0;
+  padding: 0 12px 4px;
+  list-style: none;
+}
+
+.searchblox-search .sb-aimode-refs li {
+  padding: 8px 0;
+  border-top: 1px solid var(--_sb-divider);
+}
+
+.searchblox-search .sb-aimode-refs a {
+  color: var(--_sb-accent-text);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.searchblox-search .sb-aimode-refs p {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--_sb-muted);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.searchblox-search .sb-aimode-followups {
+  margin-top: 16px;
+}
+
+.searchblox-search .sb-aimode-followups h3 {
+  margin: 0 0 8px;
+  color: var(--_sb-accent-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.searchblox-search .sb-aimode-form {
+  display: flex;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--_sb-divider);
+}
+
+.searchblox-search .sb-aimode-exit {
+  flex-shrink: 0;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid var(--_sb-control-border);
+  border-radius: var(--sb-radius, 8px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.searchblox-search .sb-aimode-exit:hover {
+  background: var(--_sb-hover);
+}
+
+.searchblox-search .sb-aimode-form .sb-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Chat: SmartFAQ questions suggested while typing (`chatSuggestions`). */
+.searchblox-search .sb-chat-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px 0;
+  border-top: 1px solid var(--_sb-divider);
+  list-style: none;
+}
+
+.searchblox-search .sb-chat-prompts button {
+  display: block;
+  width: 100%;
+  border-radius: var(--sb-radius, 8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .searchblox-search .sb-spinner,
+  .searchblox-search .sb-voice.is-listening {
     animation: none;
   }
 }

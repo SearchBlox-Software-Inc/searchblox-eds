@@ -6,7 +6,10 @@
  *   GET {domain}/rest/v2/api/smartsuggest (when `smartSuggest` names an index)
  *   POST {domain}/rest/v2/api/ai-overview (when `aiOverview` names collections)
  *   GET {domain}/rest/v2/api/smart-faq/* (unless `smartFaqs` is false)
- *   GET/POST {domain}/ui/v1/chatbot/* (when `chatbot` names a console chatbot)
+ *   GET/POST {domain}/ui/v1/chatbot/* (when `chatbot` or `aiMode` names a console chatbot)
+ *   GET {domain}/ui/v1/api/document-lookup (AI Mode references)
+ *   POST {domain}/rest/v2/api/query/topquery (popular searches when nothing matches)
+ *   POST {domain}/rest/v2/api/speech/text (voice search where the browser can't transcribe)
  *   POST {domain}/rest/v2/api/recommendations (when `recommendations` is on)
  *   GET/POST {domain}/ui/v1/searchai-assist (when `assist` is on)
  *   POST {domain}/ui/v1/analytics/*, /ui/v1/featured-result/display-count (unless `analytics` is false)
@@ -39,6 +42,12 @@ const DEFAULTS = {
   recommendations: false,
   llmFields: 'off',
   assist: false,
+  topQueries: true,
+  trending: '',
+  loadMore: false,
+  voiceSearch: false,
+  aiMode: '',
+  chatSuggestions: false,
 };
 
 const FACET_LABELS = {
@@ -73,6 +82,18 @@ const ASSIST_LIMIT = 4;
 const ASSIST_SKIP = /^(mp3|mp4|wav|ogg|m4a|m4b|m4p|aac|flac|wma|aiff?|aifc|mid|avi|mov|wmv|webm|mkv|flv|gif)$/i;
 const ASSIST_PROMPTS = ['analyze', 'compare', 'explain', 'highlights', 'summarize'];
 const TOPICS_SHOWN = 5;
+// As in the SearchBlox search plugin: 5 popular searches when nothing matches,
+// 5 trending searches when the empty box is focused, AI Mode answers from 10
+// passages, the chat asks if there's anything else after 30 idle minutes, and
+// chat suggests 3 SmartFAQs once 3 characters are typed.
+const TOP_QUERIES = 5;
+const TRENDING_LIMIT = 5;
+const AI_MODE_PASSAGES = 10;
+const CHAT_IDLE_MINUTES = 30;
+const CHAT_SUGGEST = 3;
+const CHAT_SUGGEST_MIN = 3;
+// Keyword search can sort by relevance or date; only date has a direction.
+const SORTS = [['relevance', 'Relevance'], ['date', 'Date']];
 
 let instanceCount = 0;
 
@@ -158,6 +179,12 @@ export function normaliseConfig(raw = {}) {
     recommendations: toBool(flat.recommendations, DEFAULTS.recommendations),
     llmFields: toLlmMode(flat.llmfields),
     assist: toBool(flat.assist, DEFAULTS.assist),
+    topQueries: toBool(flat.topqueries, DEFAULTS.topQueries),
+    trending: `${flat.trending || ''}`.trim(),
+    loadMore: toBool(flat.loadmore, DEFAULTS.loadMore),
+    voiceSearch: toBool(flat.voicesearch, DEFAULTS.voiceSearch),
+    aiMode: `${flat.aimode || ''}`.trim(),
+    chatSuggestions: toBool(flat.chatsuggestions, DEFAULTS.chatSuggestions),
   };
 }
 
@@ -166,20 +193,23 @@ export function normaliseConfig(raw = {}) {
 // ------------------------------------------------------------------
 
 /**
- * Builds the Search API URL. `state` = { query, page, filters: { field: [values] } }.
- * Several values of one field narrow the results: SearchBlox requires all of them.
- * Hybrid search blends keyword and vector (meaning) matching: `v.weight` is the
- * vector share and `v.threshold` the minimum similarity. Terms are ORed, as in
- * the SearchBlox search plugin, so long natural-language queries still match.
- * `public=true` is what allows anonymous (token-less) search; only collections
- * marked Public in SearchBlox are returned.
+ * Builds the Search API URL. `state` = { query, page, filters: { field: [values] },
+ * sort, sortdir, allTerms }. Several values of one field narrow the results:
+ * SearchBlox requires all of them. Hybrid search blends keyword and vector
+ * (meaning) matching: `v.weight` is the vector share and `v.threshold` the
+ * minimum similarity. As in the SearchBlox search plugin, hybrid search ORs the
+ * terms so long natural-language queries still match, and keyword search (or
+ * `allTerms`) requires all of them. `public=true` is what allows anonymous
+ * (token-less) search; only collections marked Public in SearchBlox are returned.
  */
 export function buildSearchUrl(config, state) {
   const params = new URLSearchParams();
   params.set('query', state.query || '*');
   params.set('page', `${state.page || 1}`);
   params.set('pagesize', `${config.pageSize}`);
-  params.set('sort', config.sort);
+  params.set('sort', state.sort || config.sort);
+  // Date sorting is newest first unless `sortdir` is "asc".
+  if (state.sort === 'date') params.set('sortdir', state.sortdir || 'desc');
   params.set('public', 'true');
   config.collections.forEach((col) => params.append('col', col));
 
@@ -192,10 +222,11 @@ export function buildSearchUrl(config, state) {
     values(value).forEach((v) => params.append(`f.${field}.filter`, v));
   });
 
-  if (config.vectorWeight > 0) {
+  const hybrid = config.vectorWeight > 0;
+  params.set('default', hybrid && !state.allTerms ? 'OR' : 'AND');
+  if (hybrid) {
     params.set('v.weight', `${config.vectorWeight}`);
     params.set('v.threshold', `${config.vectorThreshold}`);
-    params.set('default', 'OR');
     return `${config.domain}/rest/v2/api/hybrid-search?${params}`;
   }
   return `${config.domain}/rest/v2/api/search?${params}`;
@@ -220,6 +251,26 @@ export function buildSmartSuggestUrl(config, query) {
 const text = (value) => (value && value !== 'null' ? `${value}` : '');
 const webUrl = (...urls) => urls.find((u) => /^https?:\/\//i.test(u || '')) || '';
 
+// As in the SearchBlox search plugin: titles can come URL-encoded ("%20") and
+// with stray "&#0;"; a "%" not followed by a hex pair is kept as is.
+function cleanTitle(value) {
+  const title = value.replace(/&#0;/g, '').replace(/&amp;/g, '&');
+  try {
+    return decodeURIComponent(title.replace(/%(?![\da-f]{2})/gi, '%25'));
+  } catch {
+    return title;
+  }
+}
+
+// Descriptions can be escaped twice ("&amp;amp;") and start with a page's
+// "Skip to main content" link.
+const cleanDescription = (value) => value
+  .replace(/&amp;(?:amp;)*/g, '&')
+  .replace(/&quot;/g, '"')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/\bskip to (?:main content|content|navigation|main navigation)\b/gi, '')
+  .trim();
+
 // One search result or recommendation. In a collection enriched by an LLM in
 // SearchBlox, title and description hold the generated text and original_* the
 // page's own; topics is a generated, comma-separated list.
@@ -230,15 +281,15 @@ const parseResult = (r) => {
     col: r.col,
     position: Number(r.no) || undefined,
     url,
-    title: text(r.title) || text(r.product_name) || url || 'Untitled',
-    description: text(r.description) || text(r.context),
+    title: cleanTitle(text(r.title) || text(r.product_name)) || url || 'Untitled',
+    description: cleanDescription(text(r.description) || text(r.context)),
     contenttype: r.contenttype || '',
     colname: text(r.colname),
     lastmodified: r.lastmodified || '',
     // A page's share image, as the SearchBlox plugin uses for thumbnails.
     thumbnail: webUrl(r['og:image'], r['twitter:image'], r.thumbnail, r.image),
-    originalTitle: text(r.original_title),
-    originalDescription: text(r.original_description),
+    originalTitle: cleanTitle(text(r.original_title)),
+    originalDescription: cleanDescription(text(r.original_description)),
     topics: toList(text(r.topics)),
     pendingReview: `${r.needsReview}` === 'true' && `${r.approved}` !== 'true',
   };
@@ -318,6 +369,25 @@ export async function suggest(config, query, signal) {
     }
   }
   return toSuggestions(await getJson(buildSuggestUrl(config, query), signal));
+}
+
+// The most searched queries, as the SearchBlox search plugin offers when nothing
+// matches. The server answers { query: count }, most searched first.
+export async function topQueries(config, signal) {
+  const data = await postJson(`${config.domain}/rest/v2/api/query/topquery`, {
+    col: config.collections.join(','), limit: `${TOP_QUERIES}`,
+  }, signal);
+  return Object.keys(data || {}).filter((q) => q.trim()).slice(0, TOP_QUERIES);
+}
+
+// Trending searches are the titles of a collection kept for the purpose (one
+// document per search), as in the SearchBlox search plugin.
+export async function trendingSearches(config, signal) {
+  const params = new URLSearchParams({
+    query: '*', cname: config.trending, sort: 'alpha', sortdir: 'asc', pagesize: `${TRENDING_LIMIT}`, public: 'true',
+  });
+  const data = await getJson(`${config.domain}/rest/v2/api/search?${params}`, signal);
+  return [...new Set((data.result || []).map((r) => stripTags(cleanTitle(text(r.title)))).filter(Boolean))];
 }
 
 // SmartFAQs are question/answer pairs generated for a collection in the console.
@@ -457,22 +527,40 @@ const faqAction = (config, query, uid, action) => track(config, '/rest/v2/api/sm
 // AI overview and chat
 // ------------------------------------------------------------------
 
+const tryJson = (raw) => {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+};
+
+// One array field of a JSON string that may not parse as a whole; entries that
+// don't parse on their own are dropped.
+function jsonArrayField(raw, key) {
+  const match = new RegExp(`"${key}"\\s*:\\s*(\\[[\\s\\S]*?\\])\\s*[,}]`).exec(raw);
+  if (!match) return [];
+  return tryJson(match[1])
+    ?? (match[1].match(/\{[^{}]*\}|"(?:[^"\\]|\\.)*"/g) || []).map(tryJson).filter((v) => v !== undefined);
+}
+
 // When the server can't parse the LLM's JSON it passes the raw string through
-// as `overview`, sometimes inside a ```json fence. Recover it if it parses.
+// as `overview`, sometimes inside a ```json fence. As in the SearchBlox search
+// plugin, a raw answer that doesn't parse (often one bad citation) keeps the
+// fields that do.
 function parseRawOverview(text) {
   const raw = `${text || ''}`.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
   if (!raw.startsWith('{')) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      overview: parsed.overview,
-      keyPoints: parsed.key_points,
-      citations: parsed.citations,
-      followupQuestions: parsed.followup_questions,
-    };
-  } catch {
-    return { overview: '' };
-  }
+  const parsed = tryJson(raw);
+  const answer = /"overview"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw);
+  if (!parsed && !answer) return { overview: '' };
+  const field = (key) => (parsed ? parsed[key] : jsonArrayField(raw, key));
+  return {
+    overview: parsed ? parsed.overview : tryJson(`"${answer[1]}"`) ?? answer[1],
+    keyPoints: field('key_points'),
+    citations: field('citations'),
+    followupQuestions: field('followup_questions'),
+  };
 }
 
 /** Maps the AI overview response into { overview, keyPoints, sources, followups }. */
@@ -501,6 +589,7 @@ export async function overview(config, query, signal) {
     cname: config.aiOverview,
     includeCitations: true,
     includeNextSteps: true,
+    includeKgContext: true,
   }, signal));
 }
 
@@ -514,6 +603,27 @@ export function parseChatAnswer(content) {
     return '';
   }).trim();
   return { text, sources };
+}
+
+// The default word list of the SearchBlox plugin's chat profanity filter:
+// badwords-list 2.0.1 (MIT, (c) 2013 Maurice Butler), comma-separated and
+// base64-encoded to keep it out of plain sight in the source.
+const PROFANITY = 'NHI1ZSw1aDF0LDVoaXQsYTU1LGFuYWwsYW51cyxhcjVlLGFycnNlLGFyc2UsYXNzLGFzcy1mdWNrZXIsYXNzZXMsYXNzZnVja2VyLGFzc2Z1a2thLGFzc2hvbGUsYXNzaG9sZXMsYXNzd2hvbGUsYV9zX3MsYiF0Y2gsYjAwYnMsYjE3Y2gsYjF0Y2gsYmFsbGJhZyxiYWxscyxiYWxsc2FjayxiYXN0YXJkLGJlYXN0aWFsLGJlYXN0aWFsaXR5LGJlbGxlbmQsYmVzdGlhbCxiZXN0aWFsaXR5LGJpK2NoLGJpYXRjaCxiaXRjaCxiaXRjaGVyLGJpdGNoZXJzLGJpdGNoZXMsYml0Y2hpbixiaXRjaGluZyxibG9vZHksYmxvdyBqb2IsYmxvd2pvYixibG93am9icyxib2lvbGFzLGJvbGxvY2ssYm9sbG9rLGJvbmVyLGJvb2IsYm9vYnMsYm9vb2JzLGJvb29vYnMsYm9vb29vYnMsYm9vb29vb29icyxicmVhc3RzLGJ1Y2V0YSxidWdnZXIsYnVtLGJ1bm55IGZ1Y2tlcixidXR0LGJ1dHRob2xlLGJ1dHRtdWNoLGJ1dHRwbHVnLGMwY2ssYzBja3N1Y2tlcixjYXJwZXQgbXVuY2hlcixjYXdrLGNoaW5rLGNpcGEsY2wxdCxjbGl0LGNsaXRvcmlzLGNsaXRzLGNudXQsY29jayxjb2NrLXN1Y2tlcixjb2NrZmFjZSxjb2NraGVhZCxjb2NrbXVuY2gsY29ja211bmNoZXIsY29ja3MsY29ja3N1Y2ssY29ja3N1Y2tlZCxjb2Nrc3Vja2VyLGNvY2tzdWNraW5nLGNvY2tzdWNrcyxjb2Nrc3VrYSxjb2Nrc3Vra2EsY29rLGNva211bmNoZXIsY29rc3Vja2EsY29vbixjb3gsY3JhcCxjdW0sY3VtbWVyLGN1bW1pbmcsY3VtcyxjdW1zaG90LGN1bmlsaW5ndXMsY3VuaWxsaW5ndXMsY3VubmlsaW5ndXMsY3VudCxjdW50bGljayxjdW50bGlja2VyLGN1bnRsaWNraW5nLGN1bnRzLGN5YWxpcyxjeWJlcmZ1YyxjeWJlcmZ1Y2ssY3liZXJmdWNrZWQsY3liZXJmdWNrZXIsY3liZXJmdWNrZXJzLGN5YmVyZnVja2luZyxkMWNrLGRhbW4sZGljayxkaWNraGVhZCxkaWxkbyxkaWxkb3MsZGluayxkaW5rcyxkaXJzYSxkbGNrLGRvZy1mdWNrZXIsZG9nZ2luLGRvZ2dpbmcsZG9ua2V5cmliYmVyLGRvb3NoLGR1Y2hlLGR5a2UsZWphY3VsYXRlLGVqYWN1bGF0ZWQsZWphY3VsYXRlcyxlamFjdWxhdGluZyxlamFjdWxhdGluZ3MsZWphY3VsYXRpb24sZWpha3VsYXRlLGYgdSBjIGssZiB1IGMgayBlIHIsZjRubnksZmFnLGZhZ2dpbmcsZmFnZ2l0dCxmYWdnb3QsZmFnZ3MsZmFnb3QsZmFnb3RzLGZhZ3MsZmFubnksZmFubnlmbGFwcyxmYW5ueWZ1Y2tlcixmYW55eSxmYXRhc3MsZmN1ayxmY3VrZXIsZmN1a2luZyxmZWNrLGZlY2tlcixmZWxjaGluZyxmZWxsYXRlLGZlbGxhdGlvLGZpbmdlcmZ1Y2ssZmluZ2VyZnVja2VkLGZpbmdlcmZ1Y2tlcixmaW5nZXJmdWNrZXJzLGZpbmdlcmZ1Y2tpbmcsZmluZ2VyZnVja3MsZmlzdGZ1Y2ssZmlzdGZ1Y2tlZCxmaXN0ZnVja2VyLGZpc3RmdWNrZXJzLGZpc3RmdWNraW5nLGZpc3RmdWNraW5ncyxmaXN0ZnVja3MsZmxhbmdlLGZvb2ssZm9va2VyLGZ1Y2ssZnVja2EsZnVja2VkLGZ1Y2tlcixmdWNrZXJzLGZ1Y2toZWFkLGZ1Y2toZWFkcyxmdWNraW4sZnVja2luZyxmdWNraW5ncyxmdWNraW5nc2hpdG1vdGhlcmZ1Y2tlcixmdWNrbWUsZnVja3MsZnVja3doaXQsZnVja3dpdCxmdWRnZSBwYWNrZXIsZnVkZ2VwYWNrZXIsZnVrLGZ1a2VyLGZ1a2tlcixmdWtraW4sZnVrcyxmdWt3aGl0LGZ1a3dpdCxmdXgsZnV4MHIsZl91X2NfayxnYW5nYmFuZyxnYW5nYmFuZ2VkLGdhbmdiYW5ncyxnYXlsb3JkLGdheXNleCxnb2F0c2UsR29kLGdvZC1kYW0sZ29kLWRhbW5lZCxnb2RkYW1uLGdvZGRhbW5lZCxoYXJkY29yZXNleCxoZWxsLGhlc2hlLGhvYXIsaG9hcmUsaG9lcixob21vLGhvcmUsaG9ybmllc3QsaG9ybnksaG90c2V4LGphY2stb2ZmLGphY2tvZmYsamFwLGplcmstb2ZmLGppc20saml6LGppem0saml6eixrYXdrLGtub2Isa25vYmVhZCxrbm9iZWQsa25vYmVuZCxrbm9iaGVhZCxrbm9iam9ja3ksa25vYmpva2V5LGtvY2ssa29uZHVtLGtvbmR1bXMsa3VtLGt1bW1lcixrdW1taW5nLGt1bXMsa3VuaWxpbmd1cyxsM2krY2gsbDNpdGNoLGxhYmlhLGx1c3QsbHVzdGluZyxtMGYwLG0wZm8sbTQ1dGVyYmF0ZSxtYTV0ZXJiOCxtYTV0ZXJiYXRlLG1hc29jaGlzdCxtYXN0ZXItYmF0ZSxtYXN0ZXJiOCxtYXN0ZXJiYXQqLG1hc3RlcmJhdDMsbWFzdGVyYmF0ZSxtYXN0ZXJiYXRpb24sbWFzdGVyYmF0aW9ucyxtYXN0dXJiYXRlLG1vLWZvLG1vZjAsbW9mbyxtb3RoYWZ1Y2ssbW90aGFmdWNrYSxtb3RoYWZ1Y2thcyxtb3RoYWZ1Y2theixtb3RoYWZ1Y2tlZCxtb3RoYWZ1Y2tlcixtb3RoYWZ1Y2tlcnMsbW90aGFmdWNraW4sbW90aGFmdWNraW5nLG1vdGhhZnVja2luZ3MsbW90aGFmdWNrcyxtb3RoZXIgZnVja2VyLG1vdGhlcmZ1Y2ssbW90aGVyZnVja2VkLG1vdGhlcmZ1Y2tlcixtb3RoZXJmdWNrZXJzLG1vdGhlcmZ1Y2tpbixtb3RoZXJmdWNraW5nLG1vdGhlcmZ1Y2tpbmdzLG1vdGhlcmZ1Y2trYSxtb3RoZXJmdWNrcyxtdWZmLG11dGhhLG11dGhhZmVja2VyLG11dGhhZnVja2tlcixtdXRoZXIsbXV0aGVyZnVja2VyLG4xZ2dhLG4xZ2dlcixuYXppLG5pZ2czcixuaWdnNGgsbmlnZ2EsbmlnZ2FoLG5pZ2dhcyxuaWdnYXosbmlnZ2VyLG5pZ2dlcnMsbm9iLG5vYiBqb2tleSxub2JoZWFkLG5vYmpvY2t5LG5vYmpva2V5LG51bWJudXRzLG51dHNhY2ssb3JnYXNpbSxvcmdhc2ltcyxvcmdhc20sb3JnYXNtcyxwMHJuLHBhd24scGVja2VyLHBlbmlzLHBlbmlzZnVja2VyLHBob25lc2V4LHBodWNrLHBodWsscGh1a2VkLHBodWtpbmcscGh1a2tlZCxwaHVra2luZyxwaHVrcyxwaHVxLHBpZ2Z1Y2tlcixwaW1waXMscGlzcyxwaXNzZWQscGlzc2VyLHBpc3NlcnMscGlzc2VzLHBpc3NmbGFwcyxwaXNzaW4scGlzc2luZyxwaXNzb2ZmLHBvb3AscG9ybixwb3Jubyxwb3Jub2dyYXBoeSxwb3Jub3MscHJpY2sscHJpY2tzLHByb24scHViZSxwdXNzZSxwdXNzaSxwdXNzaWVzLHB1c3N5LHB1c3N5cyxyZWN0dW0scmV0YXJkLHJpbWphdyxyaW1taW5nLHMgaGl0LHMuby5iLixzYWRpc3Qsc2NobG9uZyxzY3Jld2luZyxzY3JvYXQsc2Nyb3RlLHNjcm90dW0sc2VtZW4sc2V4LHNoISssc2ghdCxzaDF0LHNoYWcsc2hhZ2dlcixzaGFnZ2luLHNoYWdnaW5nLHNoZW1hbGUsc2hpKyxzaGl0LHNoaXRkaWNrLHNoaXRlLHNoaXRlZCxzaGl0ZXksc2hpdGZ1Y2ssc2hpdGZ1bGwsc2hpdGhlYWQsc2hpdGluZyxzaGl0aW5ncyxzaGl0cyxzaGl0dGVkLHNoaXR0ZXIsc2hpdHRlcnMsc2hpdHRpbmcsc2hpdHRpbmdzLHNoaXR0eSxza2FuayxzbHV0LHNsdXRzLHNtZWdtYSxzbXV0LHNuYXRjaCxzb24tb2YtYS1iaXRjaCxzcGFjLHNwdW5rLHNfaF9pX3QsdDF0dDFlNSx0MXR0aWVzLHRlZXRzLHRlZXosdGVzdGljYWwsdGVzdGljbGUsdGl0LHRpdGZ1Y2ssdGl0cyx0aXR0LHRpdHRpZTUsdGl0dGllZnVja2VyLHRpdHRpZXMsdGl0dHlmdWNrLHRpdHR5d2Fuayx0aXR3YW5rLHRvc3Nlcix0dXJkLHR3NHQsdHdhdCx0d2F0aGVhZCx0d2F0dHksdHd1bnQsdHd1bnRlcix2MTRncmEsdjFncmEsdmFnaW5hLHZpYWdyYSx2dWx2YSx3MDBzZSx3YW5nLHdhbmssd2Fua2VyLHdhbmt5LHdob2FyLHdob3JlLHdpbGxpZXMsd2lsbHkseHJhdGVkLHh4eA==';
+let profanityWords;
+
+// The console's "mask profanity" setting, as the plugin's filter applies it:
+// each listed word becomes "#%*!". `useDefaultDataset` adds the list above;
+// whitelisted words are let through and blacklisted ones added.
+export function maskProfanity(text, rules = {}) {
+  if (!rules.maskProfanity) return text;
+  profanityWords = profanityWords || atob(PROFANITY).split(',');
+  const allowed = new Set((rules.whitelistedWords || []).map((w) => `${w}`.toLowerCase()));
+  const words = [...(rules.useDefaultDataset === false ? [] : profanityWords), ...(rules.blacklistedWords || [])]
+    .map((w) => `${w}`.trim().toLowerCase())
+    .filter((w) => w && !allowed.has(w));
+  if (!words.length) return text;
+  const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return text.replace(new RegExp(`\\b(?:${escaped.join('|')})\\b`, 'gi'), '#%*!');
 }
 
 // The console's "mask sensitive data" setting: hide these before the question
@@ -549,6 +659,7 @@ export async function chatSettings(config, signal) {
 }
 
 /** One chat turn. The server keeps the history; we only send back its conversation id. */
+// `useKg` is the chatbot's own setting, sent as is (left out when unset).
 export async function chat(config, { question, conversationId, useKg }, signal) {
   const data = await postJson(chatUrl(config, 'chat'), {
     chatbotname: config.chatbot,
@@ -568,6 +679,48 @@ export async function chat(config, { question, conversationId, useKg }, signal) 
 }
 
 export const chatVote = (config, id, action) => postJson(chatUrl(config, 'action'), { message_id: id, action });
+
+/**
+ * One AI Mode turn: the `aiMode` chatbot answers from `AI_MODE_PASSAGES` passages
+ * and suggests follow-up questions. Cited pages come back as plain URLs, so the
+ * caller looks up their titles with documentLookup().
+ */
+export async function aiModeAsk(config, { question, conversationId }, signal) {
+  const data = await postJson(chatUrl(config, 'chat-with-suggestions'), {
+    chatbotname: config.aiMode,
+    question,
+    passages: AI_MODE_PASSAGES,
+    ...(conversationId ? { conversation_id: conversationId } : {}),
+  }, signal);
+  const message = data.choices?.[0]?.message;
+  if (!message) throw new Error(data.message || 'Empty AI Mode response');
+  const answer = parseChatAnswer(message.content);
+  // Without <source> tags, any bare URLs in the answer are its sources.
+  if (!answer.sources.length) {
+    (answer.text.match(/https?:\/\/[^\s)<>"]+/g) || []).forEach((url) => {
+      const href = safeUrl(url.replace(/[.,;:]+$/, ''));
+      if (href && !answer.sources.includes(href)) answer.sources.push(href);
+    });
+  }
+  return {
+    id: data.id,
+    conversationId: data.conversation_id,
+    followups: (data.follow_up_questions || []).filter((q) => typeof q === 'string' && q.trim()),
+    ...answer,
+  };
+}
+
+// Titles and descriptions of indexed pages, by URL; pages not found are left out.
+export async function documentLookup(config, urls, signal) {
+  const params = new URLSearchParams();
+  urls.forEach((url) => params.append('url', url));
+  const data = await getJson(`${config.domain}/ui/v1/api/document-lookup?${params}`, signal);
+  return (data.documents || []).filter((d) => d.url).map((d) => ({
+    url: d.url,
+    title: cleanTitle(text(d.original_title) || text(d.title)) || displayUrl(d.url),
+    description: cleanDescription(text(d.original_description) || text(d.description)),
+  }));
+}
 
 // ------------------------------------------------------------------
 // DOM helpers
@@ -610,8 +763,6 @@ const ICONS = {
   up: 'M7 11v8a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1v-7a1 1 0 0 1 1 -1h3a4 4 0 0 0 4 -4v-1a2 2 0 0 1 4 0v5h3a2 2 0 0 1 2 2l-1 5a2 3 0 0 1 -2 2h-7a3 3 0 0 1 -3 -3',
   adjustments: 'M14 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 6l8 0M16 6l4 0M8 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 12l2 0M10 12l10 0M17 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 18l11 0M19 18l1 0',
   settings: 'M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065zM9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0',
-  square: 'M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z',
-  squareCheck: 'M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2zM9 12l2 2l4 -4',
   copy: 'M7 7m0 2.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667zM4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1',
   markdown: 'M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2zM7 15v-6l2 2l2 -2v6M14 13l2 2l2 -2M16 15v-6',
   check: 'M5 12l5 5l10 -10',
@@ -622,6 +773,13 @@ const ICONS = {
   edit: 'M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3l8.385 -8.415zM16 5l3 3',
   quote: 'M10 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5M19 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5',
   down: 'M7 13v-8a1 1 0 0 0 -1 -1h-2a1 1 0 0 0 -1 1v7a1 1 0 0 0 1 1h3a4 4 0 0 1 4 4v1a2 2 0 0 0 4 0v-5h3a2 2 0 0 0 2 -2l-1 -5a2 3 0 0 0 -2 -2h-7a3 3 0 0 0 -3 3',
+  noResults: 'M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0M21 21l-6 -6M10 13v.01M10 7v3',
+  trending: 'M3 17l6 -6l4 4l8 -8M14 7h7v7',
+  microphone: 'M9 5a3 3 0 0 1 6 0v5a3 3 0 0 1 -6 0zM5 10a7 7 0 0 0 14 0M8 21h8M12 17v4',
+  stop: 'M5 7a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2z',
+  sortDesc: 'M4 6h9M4 12h7M4 18h7M15 15l3 3l3 -3M18 6v12',
+  sortAsc: 'M4 6h7M4 12h7M4 18h9M15 9l3 -3l3 3M18 6v12',
+  chevronDown: 'M6 9l6 6l6 -6',
 };
 
 function icon(name, size = 18) {
@@ -727,6 +885,13 @@ function highlighted(text) {
   return frag;
 }
 
+// `text` with the first match of what was typed marked, for suggestion lists.
+function matchHighlight(text, typed) {
+  const at = text.toLowerCase().indexOf(typed.toLowerCase());
+  if (at < 0 || !typed) return text;
+  return [text.slice(0, at), el('mark', {}, text.slice(at, at + typed.length)), text.slice(at + typed.length)];
+}
+
 // <template> parses inertly (no scripts, no image loads) and, unlike
 // DOMParser's <body>, keeps leading/trailing whitespace around highlights.
 function stripTags(text) {
@@ -770,11 +935,17 @@ function readUrlState(config) {
     const selected = params.getAll(`f.${field}`).filter(Boolean);
     if (selected.length) filters[field] = selected;
   });
+  const sort = SORTS.some(([value]) => value === params.get('sort')) ? params.get('sort') : '';
   return {
     query: params.get(config.queryParam) || '',
-    page: Number.parseInt(params.get('page'), 10) || 1,
+    // Load more starts from the first page again.
+    page: config.loadMore ? 1 : Number.parseInt(params.get('page'), 10) || 1,
     filters,
     faq: params.get('faq') || '',
+    sort,
+    sortdir: sort === 'date' && params.get('sortdir') === 'asc' ? 'asc' : '',
+    // "mode=ai" hands a question from a box-only instance to AI Mode.
+    aiMode: params.get('mode') === 'ai',
   };
 }
 
@@ -782,10 +953,15 @@ function writeUrlState(config, state) {
   if (!config.syncUrl) return;
   const url = new URL(window.location.href);
   url.searchParams.set(config.queryParam, state.query);
-  if (state.page > 1) url.searchParams.set('page', state.page);
+  if (state.page > 1 && !config.loadMore) url.searchParams.set('page', state.page);
   else url.searchParams.delete('page');
   if (state.faq) url.searchParams.set('faq', state.faq);
   else url.searchParams.delete('faq');
+  if (state.sort) url.searchParams.set('sort', state.sort);
+  else url.searchParams.delete('sort');
+  if (state.sortdir) url.searchParams.set('sortdir', state.sortdir);
+  else url.searchParams.delete('sortdir');
+  url.searchParams.delete('mode');
   config.facets.forEach(({ field }) => {
     url.searchParams.delete(`f.${field}`);
     values(state.filters[field]).forEach((v) => url.searchParams.append(`f.${field}`, v));
@@ -842,9 +1018,16 @@ function ensureSkeleton(root, config) {
     });
     const summary = el('div', { className: 'sb-summary' });
     status.before(summary);
-    summary.append(toggle, status);
+    summary.append(toggle, status, el('div', { className: 'sb-sort', hidden: true }));
     root.querySelector('.sb-facets').id = `${id}-facets`;
     setFacetsShown(root, false);
+  }
+
+  // Added here too so the EDS widget's own markup gets them.
+  const main = root.querySelector('.sb-main');
+  if (main && !main.querySelector('.sb-selected')) {
+    main.prepend(el('div', { className: 'sb-selected', hidden: true }));
+    root.querySelector('.sb-results').after(el('div', { className: 'sb-empty', hidden: true }));
   }
 
   // A box-only instance (header search) never shows results.
@@ -878,13 +1061,28 @@ function renderResults(root, config, data, state, ui = {}) {
   status.replaceChildren(...(data.hits
     ? [`${data.hits.toLocaleString()} result${data.hits === 1 ? '' : 's'} for `, query]
     : ['No results for ', query, '.']));
-  if (data.suggest && data.suggest.toLowerCase() !== state.query.toLowerCase()) {
+  // After a search with no results was retried (see mount): say what was searched.
+  if (state.original) {
+    status.append(`${data.hits ? '.' : ''} No results for `, el('strong', {}, el('em', {}, state.original)), '.');
+    if (state.retry === 'suggest') {
+      status.append(' ', el('button', {
+        type: 'button',
+        className: 'sb-link-button',
+        onClick: () => root.sbRun({
+          ...state, query: state.original, page: 1, original: '', retry: 'none',
+        }),
+      }, `Search for ${state.original} instead`));
+    }
+  } else if (data.hits && data.suggest && data.suggest.toLowerCase() !== state.query.toLowerCase()) {
     status.append(' Did you mean ', el('button', {
       type: 'button',
       className: 'sb-link-button',
       onClick: () => root.sbRun({ query: data.suggest, page: 1, filters: {} }),
     }, data.suggest), '?');
   }
+  renderSort(root, config, data, state);
+  renderSelectedFilters(root, config, state);
+  renderEmpty(root, config, data, state);
 
   const featured = state.page === 1 ? data.featured.filter((f) => safeUrl(f.url)) : [];
   featuredEl.hidden = featured.length === 0;
@@ -908,7 +1106,100 @@ function renderResults(root, config, data, state, ui = {}) {
 
   renderResultList(root, config, data, state, ui);
   renderFacets(root, config, data, state);
-  renderPagination(root, data, state);
+  renderPagination(root, config, data, state);
+}
+
+// Sort menu for keyword search, as in the SearchBlox search plugin (hybrid
+// search ranks by meaning, so it has none): relevance or date, and for date
+// newest or oldest first.
+function renderSort(root, config, data, state) {
+  const box = root.querySelector('.sb-sort');
+  if (!box) return;
+  box.hidden = config.vectorWeight > 0 || !data.hits;
+  if (box.hidden) {
+    box.replaceChildren();
+    return;
+  }
+  const id = `${root.querySelector('.sb-input').id}-sort`;
+  const sort = state.sort || (config.sort === 'date' ? 'date' : 'relevance');
+  const apply = (next) => root.sbRun({ ...state, page: 1, ...next });
+  const select = el('select', {
+    id, className: 'sb-sort-select', onChange: (e) => apply({ sort: e.target.value, sortdir: '' }),
+  }, SORTS.map(([value, label]) => el('option', { value, selected: value === sort }, label)));
+  const direction = (dir, name, label) => el('button', {
+    type: 'button',
+    className: 'sb-sort-dir',
+    title: label,
+    'aria-label': label,
+    'aria-pressed': `${(state.sortdir || 'desc') === dir}`,
+    onClick: () => apply({ sort, sortdir: dir === 'desc' ? '' : dir }),
+  }, icon(name, 18));
+  // replaceChildren() would render null as text, so filter the empty slot out.
+  box.replaceChildren(...[
+    el('label', { for: id }, 'Sort by'),
+    el('span', { className: 'sb-sort-wrap' }, select, icon('chevronDown', 16)),
+    sort === 'date' ? el('span', { className: 'sb-sort-dirs', role: 'group', 'aria-label': 'Sort direction' },
+      direction('desc', 'sortDesc', 'Newest first'),
+      direction('asc', 'sortAsc', 'Oldest first')) : null,
+  ].filter(Boolean));
+}
+
+// The selected filters as chips above the results, each removing itself, and
+// "Clear all", as in the SearchBlox search plugin.
+function renderSelectedFilters(root, config, state) {
+  const box = root.querySelector('.sb-selected');
+  if (!box) return;
+  const chips = config.facets.flatMap(({ field, label }) => values(state.filters[field]).map((value) => el('button', {
+    type: 'button',
+    className: 'sb-chip',
+    title: `Remove filter: ${label}: ${value}`,
+    'aria-label': `Remove filter: ${label}: ${value}`,
+    onClick: () => root.sbRun({
+      ...state, page: 1, filters: { ...state.filters, [field]: values(state.filters[field]).filter((v) => v !== value) },
+    }),
+  }, el('span', {}, value), icon('close', 14))));
+  box.hidden = !chips.length;
+  box.replaceChildren(...(chips.length ? [
+    el('button', {
+      type: 'button', className: 'sb-chip sb-chip-clear', onClick: () => root.sbRun({ ...state, page: 1, filters: {} }),
+    }, 'Clear all'),
+    ...chips,
+  ] : []));
+}
+
+// Shown instead of results when nothing matches: tips, and the most searched
+// queries (first page only) as in the SearchBlox search plugin.
+function renderEmpty(root, config, data, state) {
+  const box = root.querySelector('.sb-empty');
+  if (!box) return;
+  box.hidden = data.hits > 0;
+  if (box.hidden) {
+    box.replaceChildren();
+    return;
+  }
+  const filtered = Object.values(state.filters || {}).some((v) => values(v).length);
+  const popular = el('div', { className: 'sb-empty-popular', hidden: true });
+  box.replaceChildren(
+    icon('noResults', 48),
+    el('div', {},
+      el('p', { className: 'sb-empty-title' }, 'No matches found.'),
+      el('p', {}, filtered
+        ? 'Try removing some filters, checking the spelling or using more general words.'
+        : 'Check the spelling or try more general words.'),
+      popular),
+  );
+  if (!config.topQueries || state.page > 1) return;
+  root.sbTopQueries = root.sbTopQueries || topQueries(config).catch(() => []);
+  root.sbTopQueries.then((queries) => {
+    if (!queries.length || !popular.isConnected) return;
+    popular.hidden = false;
+    popular.replaceChildren(
+      el('p', {}, 'Or search for:'),
+      el('ul', {}, queries.map((q) => el('li', {}, el('button', {
+        type: 'button', onClick: () => root.sbRun({ query: q, page: 1, filters: {} }),
+      }, icon('search', 16), q)))),
+    );
+  });
 }
 
 // LLM-generated fields, as in the SearchBlox plugin. "off": the page's own title
@@ -948,7 +1239,7 @@ function topicList(config, topics, ui) {
   return list;
 }
 
-// The Assist checkbox-button on a card; syncAssist() updates them all in place.
+// The Assist toggle beside a card's title; syncAssist() updates them all in place.
 function assistButton(r, picker) {
   const button = el('button', { type: 'button', className: 'sb-assist-pick', onClick: () => picker.toggle(r) });
   button.sbResult = r;
@@ -959,7 +1250,7 @@ function assistButton(r, picker) {
 function syncAssistButton(button, picker) {
   const picked = picker.has(button.sbResult);
   const full = !picked && picker.full();
-  button.replaceChildren(icon(picked ? 'squareCheck' : 'square', 16), 'SearchAI Assist');
+  button.replaceChildren(icon(picked ? 'check' : 'ai', 16), 'SearchAI Assist');
   button.setAttribute('aria-pressed', `${picked}`);
   button.disabled = full;
   button.title = full ? `Up to ${ASSIST_LIMIT} results can be used at once` : `${picked ? 'Remove from' : 'Add to'} SearchAI Assist`;
@@ -969,13 +1260,14 @@ function syncAssist(root, picker) {
   root.querySelectorAll('.sb-assist-pick').forEach((b) => syncAssistButton(b, picker));
 }
 
-function renderResultList(root, config, data, state, ui) {
+// `append` adds the results below the ones shown (load more).
+function renderResultList(root, config, data, state, ui, append = false) {
   const resultsEl = root.querySelector('.sb-results');
   const target = config.newTab ? '_blank' : undefined;
   const rel = config.newTab ? 'noopener' : undefined;
 
-  resultsEl.setAttribute('start', `${(state.page - 1) * config.pageSize + 1}`);
-  resultsEl.replaceChildren(...data.results.map((r, i) => {
+  if (!append) resultsEl.setAttribute('start', `${(state.page - 1) * config.pageSize + 1}`);
+  resultsEl[append ? 'append' : 'replaceChildren'](...data.results.map((r, i) => {
     const href = safeUrl(r.url);
     const date = formatDate(r.lastmodified);
     const logClick = () => track(config, '/ui/v1/analytics/click', {
@@ -996,20 +1288,22 @@ function renderResultList(root, config, data, state, ui) {
     const shown = llmView(config, r);
     const picker = ui.assist && r.uid && !ASSIST_SKIP.test(r.contenttype) ? ui.assist : null;
     const detail = (name, label, ...content) => el('span', { className: 'sb-result-detail', title: label }, icon(name, 16), ...content);
-    // A card like the SearchBlox plugin's: title, description, URL and thumbnail,
-    // then a strip with the date, file type and collection.
+    // A card like the SearchBlox plugin's: title (with the Assist toggle), description,
+    // URL and thumbnail, then a strip with the date, file type and collection.
     return el('li', { className: 'sb-result' },
       el('div', { className: 'sb-result-content' },
         el('div', { className: 'sb-result-fields' },
-          el('h3', { className: 'sb-result-title' },
-            href ? el('a', {
-              href,
-              target,
-              rel,
-              onClick: opened,
-              // Middle-click opens a new tab without a click event.
-              onAuxclick: (e) => e.button === 1 && opened(),
-            }, highlighted(shown.title)) : highlighted(shown.title)),
+          el('div', { className: 'sb-result-heading' },
+            el('h3', { className: 'sb-result-title' },
+              href ? el('a', {
+                href,
+                target,
+                rel,
+                onClick: opened,
+                // Middle-click opens a new tab without a click event.
+                onAuxclick: (e) => e.button === 1 && opened(),
+              }, highlighted(shown.title)) : highlighted(shown.title)),
+            picker ? assistButton(r, picker) : null),
           // Both are cut short by CSS; the tooltip shows the full text.
           shown.description ? el('p', { className: 'sb-result-desc', title: stripTags(shown.description) }, highlighted(shown.description)) : null,
           href ? el('div', { className: 'sb-result-url', title: href }, href) : null,
@@ -1022,11 +1316,10 @@ function renderResultList(root, config, data, state, ui) {
         shown.generated.title ? el('p', { className: 'sb-llm-title' }, highlighted(shown.generated.title)) : null,
         shown.generated.description ? el('p', { className: 'sb-llm-desc' }, highlighted(shown.generated.description)) : null,
         shown.generated.topics.length ? topicList(config, shown.generated.topics, ui) : null) : null,
-      date || r.contenttype || r.colname || picker ? el('div', { className: 'sb-result-details' },
+      date || r.contenttype || r.colname ? el('div', { className: 'sb-result-details' },
         date ? detail('calendar', 'Last modified', el('time', { datetime: r.lastmodified }, date)) : null,
         r.contenttype ? detail('file', 'Content type', r.contenttype.toLowerCase()) : null,
-        r.colname ? detail('layers', 'Collection', r.colname) : null,
-        picker ? assistButton(r, picker) : null) : null);
+        r.colname ? detail('layers', 'Collection', r.colname) : null) : null);
   }));
 }
 
@@ -1147,11 +1440,26 @@ function renderFacets(root, config, data, state) {
   }
 }
 
-function renderPagination(root, data, state) {
+function renderPagination(root, config, data, state) {
   const nav = root.querySelector('.sb-pagination');
   const last = Math.max(1, data.lastPage);
-  if (last <= 1) {
+  if (last <= 1 || (config.loadMore && state.page >= last)) {
     nav.replaceChildren();
+    return;
+  }
+
+  // Load more, as in the SearchBlox search plugin: the next page is added below.
+  if (config.loadMore) {
+    nav.replaceChildren(el('button', {
+      type: 'button',
+      className: 'sb-load-more',
+      onClick: (e) => {
+        e.currentTarget.disabled = true;
+        e.currentTarget.setAttribute('aria-busy', 'true');
+        e.currentTarget.replaceChildren(el('span', { className: 'sb-spinner', 'aria-hidden': 'true' }), 'Loading…');
+        root.sbRun({ ...state, page: state.page + 1 }, { append: true });
+      },
+    }, 'Load more'));
     return;
   }
 
@@ -1341,14 +1649,27 @@ function renderRecommendations(root, config, recs, { loading, query }) {
       const href = safeUrl(r.url);
       const date = formatDate(r.lastmodified);
       const isNew = previous.length > 0 && !previous.includes(r.uid);
-      const open = () => trackRecommendation(config, {
-        sessionId: recs.sessionId,
-        recommendationId: r.id,
-        position: i + 1,
-        collections: [r.colname],
-        query,
-        url: r.url,
-      });
+      // Logged as a recommendation click and, as in the plugin, a result click.
+      const open = () => {
+        trackRecommendation(config, {
+          sessionId: recs.sessionId,
+          recommendationId: r.id,
+          position: i + 1,
+          collections: [r.colname],
+          query,
+          url: r.url,
+        });
+        track(config, '/ui/v1/analytics/click', {
+          collection: r.col,
+          query,
+          title: stripTags(r.title),
+          uid: r.uid,
+          url: r.url,
+          pcode: getPcode() || undefined,
+          pos: i + 1,
+          page: 1,
+        });
+      };
       return el('li', { className: 'sb-rec' },
         el('h3', { className: 'sb-result-title' },
           href ? el('a', {
@@ -1405,9 +1726,10 @@ function wireSuggestions(root, config, submit) {
     input.setAttribute('aria-activedescendant', items[active].id);
   };
 
-  // Suggestions, then SmartFAQs, each under a heading when both are shown.
-  const show = (items, faqs = []) => {
-    if (!items.length && !faqs.length) {
+  // Suggestions, then SmartFAQs, each under a heading when both are shown;
+  // `trending` lists trending searches instead.
+  const show = (items, faqs = [], trending = []) => {
+    if (!items.length && !faqs.length && !trending.length) {
       close();
       return;
     }
@@ -1427,6 +1749,8 @@ function wireSuggestions(root, config, submit) {
     };
     const heading = (name, label) => el('li', { role: 'presentation', className: 'sb-suggest-heading' }, icon(name, 16), label);
     list.replaceChildren(...[
+      trending.length ? heading('trending', 'Trending searches') : null,
+      ...trending.map((text) => option(text, () => pick(text))),
       faqs.length && items.length ? heading('search', 'Suggestions') : null,
       ...items.map((text) => option(text, () => pick(text))),
       faqs.length ? heading('help', 'SmartFAQs') : null,
@@ -1437,12 +1761,32 @@ function wireSuggestions(root, config, submit) {
     active = -1;
   };
 
+  // Trending searches while the box is empty, fetched once.
+  let trending;
+  const showTrending = () => {
+    if (!config.trending || input.value.trim()) return;
+    trending = trending || trendingSearches(config).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[searchblox-search] trending searches', err);
+      return [];
+    });
+    trending.then((items) => {
+      if (document.activeElement === input && !input.value.trim()) show([], [], items);
+    });
+  };
+  input.addEventListener('focus', showTrending);
+
   input.addEventListener('input', () => {
     clearTimeout(timer);
     controller?.abort();
     const query = input.value.trim();
     typed = query;
-    if (query.length < 2) {
+    if (!query) {
+      close();
+      showTrending();
+      return;
+    }
+    if (query.length < 2 || !config.autosuggest) {
       close();
       return;
     }
@@ -1483,6 +1827,189 @@ function wireSuggestions(root, config, submit) {
 
   input.addEventListener('blur', close);
   return close;
+}
+
+// ------------------------------------------------------------------
+// Voice search
+// ------------------------------------------------------------------
+
+// As in the SearchBlox search plugin: the browser's speech recognition where it
+// works, otherwise a recording sent to SearchBlox's speech-to-text endpoint.
+// Recording stops after a second of silence once the visitor has spoken, or
+// after 5 seconds of nothing; nothing longer than 15 seconds is sent.
+const VOICE_SILENCE = 1000;
+const VOICE_WAIT = 5000;
+const VOICE_MAX = 15000;
+const VOICE_RATE = 16000;
+// Brave and Edge expose SpeechRecognition but it doesn't transcribe there.
+const SpeechRecognitionApi = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+const nativeSpeech = () => SpeechRecognitionApi && !navigator.brave && !/\bEdg\//.test(navigator.userAgent);
+const recordedSpeech = () => Boolean(navigator.mediaDevices?.getUserMedia && globalThis.MediaRecorder && globalThis.AudioContext);
+const speechLang = () => document.documentElement.lang || navigator.language || 'en-US';
+
+// 16-bit mono WAV, which the speech-to-text endpoint takes as LINEAR16.
+function wav(samples, rate) {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const ascii = (offset, str) => [...str].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
+  ascii(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((v, i) => view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, v)) * 0x7fff, true));
+  return new Uint8Array(view.buffer);
+}
+
+async function transcribe(config, blob) {
+  // Decoding at 16 kHz resamples whatever the browser recorded.
+  const ctx = new AudioContext({ sampleRate: VOICE_RATE });
+  try {
+    const audio = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const bytes = wav(audio.getChannelData(0), audio.sampleRate);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const data = await postJson(`${config.domain}/rest/v2/api/speech/text`, {
+      config: { encoding: 'LINEAR16', languageCode: speechLang(), sampleRateHertz: audio.sampleRate },
+      audio: { content: btoa(binary) },
+    });
+    if (data.error) throw new Error(data.error.message || 'Speech-to-text failed');
+    return `${data.results?.[0]?.alternatives?.[0]?.transcript || ''}`.trim();
+  } finally {
+    ctx.close();
+  }
+}
+
+/**
+ * A microphone button. `onText(text)` gets the transcript; `onState(state)` gets
+ * 'listening', 'working' (transcribing a recording), 'idle' or 'error'.
+ * Returns null when the browser can do neither kind of voice input.
+ */
+function voiceButton(config, { onText, onState }) {
+  if (!nativeSpeech() && !recordedSpeech()) return null;
+  let useNative = nativeSpeech();
+  let stop = null;
+  const button = el('button', { type: 'button', className: 'sb-voice' });
+  const setState = (state) => {
+    const listening = state === 'listening';
+    const label = listening ? 'Stop listening' : 'Search by voice';
+    button.replaceChildren(icon(listening ? 'stop' : 'microphone', 20));
+    button.classList.toggle('is-listening', listening);
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.disabled = state === 'working';
+    onState(state);
+  };
+  setState('idle');
+
+  const record = async () => {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setState('error');
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const levels = new Float32Array(analyser.fftSize);
+    const started = performance.now();
+    let spoke = false;
+    let quietSince = started;
+    let frame;
+    let send = false;
+    const finish = (keep) => {
+      if (recorder.state === 'inactive') return;
+      send = keep;
+      cancelAnimationFrame(frame);
+      recorder.stop();
+    };
+    const watch = () => {
+      analyser.getFloatTimeDomainData(levels);
+      const loud = Math.sqrt(levels.reduce((sum, v) => sum + v * v, 0) / levels.length) > 0.02;
+      const now = performance.now();
+      if (loud) {
+        spoke = true;
+        quietSince = now;
+      }
+      if ((spoke && now - quietSince > VOICE_SILENCE) || now - started > VOICE_MAX) finish(spoke);
+      else if (!spoke && now - started > VOICE_WAIT) finish(false);
+      else frame = requestAnimationFrame(watch);
+    };
+    recorder.addEventListener('dataavailable', (e) => chunks.push(e.data));
+    recorder.addEventListener('stop', async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close();
+      stop = null;
+      if (!send) {
+        setState('idle');
+        return;
+      }
+      setState('working');
+      try {
+        const text = await transcribe(config, new Blob(chunks, { type: recorder.mimeType }));
+        setState(text ? 'idle' : 'error');
+        if (text) onText(text);
+      } catch (err) {
+        setState('error');
+        // eslint-disable-next-line no-console
+        console.error('[searchblox-search] voice search', err);
+      }
+    });
+    recorder.start();
+    stop = () => finish(spoke);
+    setState('listening');
+    watch();
+  };
+
+  const listen = () => {
+    const recognition = new SpeechRecognitionApi();
+    recognition.lang = speechLang();
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    let heard = '';
+    let failed = false;
+    recognition.addEventListener('result', (e) => {
+      heard = e.results[e.results.length - 1][0].transcript.trim();
+    });
+    recognition.addEventListener('error', (e) => {
+      failed = true;
+      // The service isn't reachable from this browser: record instead from now on.
+      if (['network', 'service-not-allowed', 'language-not-supported'].includes(e.error) && recordedSpeech()) {
+        useNative = false;
+      }
+    });
+    recognition.addEventListener('end', () => {
+      stop = null;
+      if (heard) {
+        setState('idle');
+        onText(heard);
+      } else if (failed && !useNative) {
+        record();
+      } else {
+        setState(failed ? 'error' : 'idle');
+      }
+    });
+    recognition.start();
+    stop = () => recognition.stop();
+    setState('listening');
+  };
+
+  button.addEventListener('click', () => {
+    if (stop) stop();
+    else if (useNative) listen();
+    else record();
+  });
+  return button;
 }
 
 // ------------------------------------------------------------------
@@ -1767,9 +2294,9 @@ function mountAssist(config, onChange) {
 // buttons beside the search button when `settings` is on. Changes last until the
 // page reloads; nothing is saved. `search(weight, threshold)` applies the search
 // settings (omitted on a box-only instance); `toggles()` lists the plugin
-// settings as { label, on, set, note, modes, mode, setMode }, read each time the
-// menu opens. One without `set` is shown switched off and greyed out, with
-// `note` saying why. `modes` ([[value, label]]) adds radio buttons, shown while on.
+// settings as { label, on, set, modes, mode, setMode }, read each time the
+// menu opens. One without `set` is shown switched off and greyed out.
+// `modes` ([[value, label]]) adds radio buttons, shown while on.
 const percent = (n) => `${Math.round(n * 100)}%`;
 
 function mountSettings(root, config, { search, toggles }) {
@@ -1858,9 +2385,8 @@ function mountSettings(root, config, { search, toggles }) {
   const pluginMenu = menu('plugin-settings', 'Plugin Settings', 'settings', () => {
     const items = toggles();
     return [el('ul', { className: 'sb-settings-list' }, items.map(({
-      label, on, set, note, modes, mode, setMode,
+      label, on, set, modes, mode, setMode,
     }, i) => {
-      const noteId = note && `${base}-plugin-note-${i}`;
       const choices = modes && el('div', {
         className: 'sb-setting-modes', role: 'radiogroup', 'aria-label': `${label} display`, hidden: !on,
       }, modes.map(([value, text]) => el('label', {},
@@ -1870,14 +2396,13 @@ function mountSettings(root, config, { search, toggles }) {
         text)));
       return el('li', { className: set ? '' : 'sb-disabled' },
         el('label', { className: 'sb-setting-switch' },
-          el('span', {}, label, note ? el('small', { id: noteId, className: 'sb-setting-note' }, note) : null),
+          el('span', {}, label),
           el('input', {
             type: 'checkbox',
             role: 'switch',
             className: 'sb-switch',
             checked: Boolean(set && on),
             disabled: !set,
-            'aria-describedby': noteId,
             onChange: (e) => {
               set(e.target.checked);
               if (choices) choices.hidden = !e.target.checked;
@@ -2008,6 +2533,54 @@ function mountChat(config) {
   let conversationId = '';
   let controller;
 
+  // After CHAT_IDLE_MINUTES without activity in the chat, ask once whether
+  // there's anything else, as the SearchBlox plugin does.
+  let idleTimer;
+  let idlePrompted = false;
+  let asked = false;
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    if (!settings || idlePrompted) return;
+    idleTimer = setTimeout(() => {
+      idlePrompted = true;
+      message('bot', {
+        label: settings.botLabel,
+        body: el('p', { className: 'sb-chat-text' }, `Is there anything ${asked ? 'else ' : ''}I can help you find?`),
+      });
+    }, CHAT_IDLE_MINUTES * 60 * 1000);
+  };
+  ['input', 'pointerdown'].forEach((type) => panel.addEventListener(type, resetIdle));
+
+  // SmartFAQ questions as prompts while typing (`chatSuggestions`).
+  const prompts = el('ul', { className: 'sb-chat-prompts', 'aria-label': 'Suggested questions', hidden: true });
+  let promptTimer;
+  let promptController;
+  const hidePrompts = () => {
+    clearTimeout(promptTimer);
+    promptController?.abort();
+    prompts.hidden = true;
+    prompts.replaceChildren();
+  };
+  if (config.chatSuggestions) {
+    panel.querySelector('.sb-chat-form').before(prompts);
+    input.addEventListener('input', () => {
+      const typed = input.value.trim();
+      hidePrompts();
+      if (typed.length < CHAT_SUGGEST_MIN) return;
+      promptTimer = setTimeout(() => {
+        promptController = new AbortController();
+        smartFaqs(config, typed, CHAT_SUGGEST, promptController.signal)
+          .then((faqs) => {
+            prompts.replaceChildren(...faqs.map((faq) => el('li', {}, el('button', {
+              type: 'button', onClick: () => ask(stripTags(faq.question)),
+            }, matchHighlight(stripTags(faq.question), typed)))));
+            prompts.hidden = !faqs.length;
+          })
+          .catch(() => {});
+      }, SUGGEST_DELAY);
+    });
+  }
+
   const add = (node) => {
     log.append(node);
     log.scrollTop = log.scrollHeight;
@@ -2041,6 +2614,9 @@ function mountChat(config) {
     controller?.abort();
     controller = new AbortController();
     conversationId = '';
+    idlePrompted = false;
+    asked = false;
+    hidePrompts();
     log.replaceChildren();
     send.disabled = true;
     const wait = pending();
@@ -2051,6 +2627,7 @@ function mountChat(config) {
         label: settings.botLabel, body: el('div', { className: 'sb-chat-text' }, markdown(settings.initialMessage)), first: true,
       });
       send.disabled = false;
+      resetIdle();
     } catch (err) {
       if (err.name === 'AbortError') return;
       wait.remove();
@@ -2060,16 +2637,20 @@ function mountChat(config) {
     }
   };
 
+  // Profanity, then sensitive data, is masked before the question leaves the browser.
   const ask = async (raw) => {
-    const question = maskSensitive(raw.trim(), settings?.sensitiveDataInformation);
+    const question = maskSensitive(maskProfanity(raw.trim(), settings?.profanitySettings), settings?.sensitiveDataInformation);
     if (!question || !settings || send.disabled) return;
     input.value = '';
+    hidePrompts();
+    asked = true;
+    resetIdle();
     message('user', { label: settings.userLabel, body: el('p', { className: 'sb-chat-text' }, question) });
     send.disabled = true;
     const wait = pending();
     const started = performance.now();
     try {
-      const answer = await chat(config, { question, conversationId, useKg: settings.useKg ?? true }, controller.signal);
+      const answer = await chat(config, { question, conversationId, useKg: settings.useKg }, controller.signal);
       conversationId = answer.conversationId || conversationId;
       wait.remove();
       message('bot', {
@@ -2114,12 +2695,159 @@ function mountChat(config) {
   };
   launcher.addEventListener('click', () => (panel.hidden ? open() : close()));
   panel.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') close();
+    if (e.key !== 'Escape') return;
+    if (!prompts.hidden) hidePrompts();
+    else close();
   });
 
   chatHost = el('div', { className: 'searchblox-search sb-chat-host' }, panel, launcher);
   document.body.append(chatHost);
   applyTheme(chatHost, config);
+}
+
+// ------------------------------------------------------------------
+// AI Mode
+// ------------------------------------------------------------------
+
+/**
+ * AI Mode, as in the SearchBlox search plugin: a conversation with the `aiMode`
+ * chatbot in place of the results. Each answer shows how long it took, thumbs
+ * up/down and its references; the latest also suggests follow-up questions.
+ * "All results" goes back to the results for the last question. Returns
+ * { open(question), close(), isOpen() }; `onExit(query)` runs the search and
+ * `onToggle(open)` follows it opening and closing.
+ */
+function mountAiMode(root, config, { onExit, onToggle }) {
+  const id = `${root.querySelector('.sb-input').id}-aimode`;
+  const thread = el('ol', { className: 'sb-aimode-thread', 'aria-live': 'polite' });
+  const empty = el('div', { className: 'sb-aimode-empty' },
+    icon('ai', 48),
+    el('p', { className: 'sb-aimode-empty-title' }, 'SearchBlox AI Mode'),
+    el('p', {}, 'Start a new thread by typing a detailed question below, then follow up with further questions.'));
+  const input = el('input', {
+    className: 'sb-input', type: 'text', autocomplete: 'off', 'aria-label': 'Ask AI Mode',
+  });
+  const send = el('button', {
+    type: 'submit', className: 'sb-submit', 'aria-label': 'Send', title: 'Send',
+  }, icon('send', 20));
+  const section = el('section', {
+    id, className: 'sb-aimode', 'aria-labelledby': `${id}-title`, hidden: true,
+  },
+  el('div', { className: 'sb-aimode-header' },
+    el('h2', { className: 'sb-ai-title', id: `${id}-title` }, icon('ai'), 'AI Mode'),
+    el('button', {
+      type: 'button', className: 'sb-ai-regenerate', 'aria-label': 'New thread', title: 'New thread', onClick: () => reset(),
+    }, icon('reload'))),
+  empty,
+  thread,
+  el('form', {
+    className: 'sb-aimode-form',
+    onSubmit: (e) => {
+      e.preventDefault();
+      ask(input.value);
+    },
+  }, input, send, el('button', {
+    type: 'button', className: 'sb-aimode-exit', onClick: () => onExit(input.value.trim() || lastQuestion),
+  }, 'All results')));
+  root.querySelector('.sb-form').after(section);
+
+  let conversationId = '';
+  let lastQuestion = '';
+  let controller;
+  const target = config.newTab ? '_blank' : undefined;
+  const rel = config.newTab ? 'noopener' : undefined;
+
+  const setPlaceholder = () => {
+    input.placeholder = thread.children.length ? 'Ask a follow-up question…' : 'Ask me anything…';
+  };
+  setPlaceholder();
+
+  // References start as the cited URLs and gain titles and descriptions once looked up.
+  const references = (sources) => {
+    const list = el('ul');
+    const draw = (docs) => list.replaceChildren(...sources.map((url) => {
+      const doc = docs.find((d) => safeUrl(d.url) === url);
+      return el('li', {},
+        el('a', { href: url, target, rel }, doc?.title || displayUrl(url)),
+        doc?.description ? el('p', {}, doc.description) : null);
+    }));
+    draw([]);
+    documentLookup(config, sources, controller.signal).then(draw).catch(() => {});
+    return el('details', { className: 'sb-aimode-refs' }, el('summary', {}, `References (${sources.length})`), list);
+  };
+
+  const ask = async (raw) => {
+    const question = raw.trim();
+    if (!question || send.disabled) return;
+    lastQuestion = question;
+    input.value = '';
+    send.disabled = true;
+    empty.hidden = true;
+    thread.querySelectorAll('.sb-aimode-followups').forEach((n) => n.remove());
+    const answer = el('div', { className: 'sb-aimode-answer' },
+      el('div', { className: 'sb-ai-loading', 'aria-label': 'Generating an answer' }, el('span'), el('span'), el('span')));
+    const turn = el('li', { className: 'sb-aimode-turn', 'aria-busy': 'true' },
+      el('p', { className: 'sb-aimode-question' }, question), answer);
+    thread.append(turn);
+    setPlaceholder();
+    turn.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    controller = controller || new AbortController();
+    const started = performance.now();
+    try {
+      const reply = await aiModeAsk(config, { question, conversationId }, controller.signal);
+      conversationId = reply.conversationId || conversationId;
+      const duration = formatDuration(performance.now() - started);
+      answer.replaceChildren(el('div', { className: 'sb-chat-text' }, markdown(reply.text)));
+      turn.append(...[
+        el('div', { className: 'sb-aimode-meta' },
+          duration ? el('span', { className: 'sb-ai-time' }, icon('stopwatch', 14), `Generated in ${duration}`) : el('span'),
+          reply.id ? votes((action) => chatVote(config, reply.id, action)) : null),
+        reply.sources.length ? references(reply.sources) : null,
+        reply.followups.length ? el('div', { className: 'sb-aimode-followups sb-ai-followups' },
+          el('h3', {}, 'Suggested follow-up questions'),
+          el('ul', {}, reply.followups.map((q) => el('li', {}, el('button', {
+            type: 'button', onClick: () => ask(q),
+          }, icon('followup', 16), q))))) : null,
+      ].filter(Boolean));
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      answer.replaceChildren(el('p', { className: 'sb-error' }, 'Sorry, that went wrong. Please try again or ask something else.'));
+      // eslint-disable-next-line no-console
+      console.error('[searchblox-search] AI Mode', err);
+    } finally {
+      turn.removeAttribute('aria-busy');
+      send.disabled = false;
+    }
+  };
+
+  const reset = () => {
+    controller?.abort();
+    controller = null;
+    conversationId = '';
+    lastQuestion = '';
+    thread.replaceChildren();
+    empty.hidden = false;
+    send.disabled = false;
+    setPlaceholder();
+    input.focus();
+  };
+
+  return {
+    isOpen: () => !section.hidden,
+    // A question already asked last isn't asked again.
+    open: (question = '') => {
+      section.hidden = false;
+      root.classList.add('sb-aimode-on');
+      onToggle(true);
+      if (question && question !== lastQuestion) ask(question);
+      else input.focus();
+    },
+    close: () => {
+      section.hidden = true;
+      root.classList.remove('sb-aimode-on');
+      onToggle(false);
+    },
+  };
 }
 
 // ------------------------------------------------------------------
@@ -2321,49 +3049,142 @@ export function mount(root, rawConfig) {
   };
   if (config.assist && !config.resultsPage) ensureAssist();
 
-  const run = async (state) => {
+  // `append` adds the next page below the results shown (load more). A search
+  // with no results is retried once, as in the SearchBlox search plugin: without
+  // its quotes (all words required), or else with the spelling suggestion.
+  // `original` and `retry` record that for the status line.
+  const run = async (state, { append = false } = {}) => {
     if (!state.query) return;
     current = state;
     controller?.abort();
     controller = new AbortController();
     input.value = state.query;
     writeUrlState(config, state);
-    if (aiOn) runOverview(state);
-    if (config.smartFaqs && !config.resultsPage) runFaqs(state);
-    if (config.recommendations) runRecommendations(state);
+    // "*" lists everything: there's no question to answer.
+    const asked = state.query !== '*';
+    if (!append) {
+      if (aiOn && asked) runOverview(state);
+      else hide('.sb-ai');
+      if (config.smartFaqs && !config.resultsPage && asked) runFaqs(state);
+      else hide('.sb-faqs');
+      if (config.recommendations) runRecommendations(state);
+    }
     root.setAttribute('aria-busy', 'true');
     try {
       const data = await search(config, state, controller.signal);
-      lastResults = { data, state };
-      renderResults(root, config, data, state, ui);
+      if (!data.hits && !append && !state.retry) {
+        const unquoted = state.query.replace(/"+/g, ' ').replace(/\s+/g, ' ').trim();
+        const retry = state.query.includes('"') && unquoted
+          ? { query: unquoted, allTerms: true, retry: 'quotes' }
+          : data.suggest && data.suggest.toLowerCase() !== state.query.toLowerCase() && { query: data.suggest, retry: 'suggest' };
+        if (retry) {
+          await run({ ...state, ...retry, original: state.query });
+          return;
+        }
+      }
+      if (append && lastResults) {
+        lastResults = {
+          data: { ...data, results: [...lastResults.data.results, ...data.results] },
+          state: { ...state, page: lastResults.state.page },
+        };
+        renderResultList(root, config, data, state, ui, true);
+        renderPagination(root, config, data, state);
+      } else {
+        lastResults = { data, state };
+        renderResults(root, config, data, state, ui);
+      }
     } catch (err) {
       if (err.name === 'AbortError') return;
+      // eslint-disable-next-line no-console
+      console.error('[searchblox-search]', err);
+      if (append && lastResults) {
+        current = { ...state, page: state.page - 1 };
+        renderPagination(root, config, lastResults.data, current);
+        return;
+      }
       root.querySelector('.sb-status').replaceChildren(el('span', { className: 'sb-error' }, 'Search is unavailable right now. Please try again.'));
       root.querySelector('.sb-results').replaceChildren();
       root.querySelector('.sb-pagination').replaceChildren();
-      // eslint-disable-next-line no-console
-      console.error('[searchblox-search]', err);
+      ['.sb-sort', '.sb-selected', '.sb-empty'].forEach(hide);
     } finally {
       root.removeAttribute('aria-busy');
     }
   };
   root.sbRun = run;
 
-  // `faq` is the uid of a SmartFAQ picked from the suggestions.
-  const submit = (query, faq) => {
+  let aiMode;
+
+  // `faq` is the uid of a SmartFAQ picked from the suggestions. A new query
+  // keeps the sort order. `ai` opens AI Mode on the results page instead.
+  const submit = (query, faq, ai = false) => {
     const q = query.trim();
-    if (!q) return;
+    if (!q && !ai) return;
     if (config.resultsPage) {
       const url = new URL(config.resultsPage, window.location.href);
       url.searchParams.set(config.queryParam, q);
       if (faq) url.searchParams.set('faq', faq);
+      if (ai) url.searchParams.set('mode', 'ai');
       window.location.assign(url);
       return;
     }
+    aiMode?.close();
     run({
-      query: q, page: 1, filters: {}, faq,
+      query: q, page: 1, filters: {}, faq, sort: current?.sort || '', sortdir: current?.sortdir || '',
     });
   };
+
+  if (config.aiMode) {
+    let toggle;
+    if (!config.resultsPage) {
+      aiMode = mountAiMode(root, config, {
+        onExit: (q) => {
+          aiMode.close();
+          if (q) submit(q);
+        },
+        onToggle: (open) => toggle.setAttribute('aria-pressed', `${open}`),
+      });
+    }
+    toggle = el('button', {
+      type: 'button',
+      className: 'sb-aimode-toggle',
+      'aria-pressed': 'false',
+      title: 'Switch to AI Mode',
+      onClick: () => {
+        closeSuggestions();
+        if (!aiMode) {
+          submit(input.value, undefined, true);
+        } else if (aiMode.isOpen()) {
+          aiMode.close();
+        } else {
+          aiMode.open(input.value.trim());
+        }
+      },
+    }, icon('ai', 20), el('span', {}, 'AI Mode'));
+    form.querySelector('.sb-submit').after(toggle);
+  }
+
+  if (config.voiceSearch) {
+    const placeholder = input.placeholder;
+    let reset;
+    const voice = voiceButton(config, {
+      onText: (text) => {
+        input.value = text;
+        closeSuggestions();
+        submit(text);
+      },
+      onState: (state) => {
+        clearTimeout(reset);
+        input.placeholder = {
+          listening: 'Listening…', working: 'Transcribing…', error: 'Didn’t catch that. Please try again.',
+        }[state] || placeholder;
+        if (state === 'error') reset = setTimeout(() => { input.placeholder = placeholder; }, 3000);
+      },
+    });
+    if (voice) {
+      root.querySelector('.sb-input-wrap').append(voice);
+      root.classList.add('sb-has-voice');
+    }
+  }
 
   if (config.settings) {
     mountSettings(root, config, {
@@ -2371,7 +3192,8 @@ export function mount(root, rawConfig) {
         config.vectorWeight = weight;
         config.vectorThreshold = threshold;
         if (weight > 0) config.pageSize = Math.min(config.pageSize, HYBRID_MAX_PAGE_SIZE);
-        if (current) run({ ...current, page: 1 });
+        // Hybrid search has no sort menu, so it goes back to relevance.
+        if (current) run({ ...current, page: 1, ...(weight > 0 ? { sort: '', sortdir: '' } : {}) });
       }),
       // The plugin's list, in its order, plus SmartFAQs. Results-page features
       // are left out of a box-only instance.
@@ -2392,7 +3214,7 @@ export function mount(root, rawConfig) {
             }
             hide('.sb-ai');
           },
-        } : { label: 'AI Overview', note: 'Set the aiOverview option' }),
+        } : { label: 'AI Overview' }),
         faqsEnabled ? {
           label: 'SmartFAQs',
           on: config.smartFaqs,
@@ -2406,10 +3228,9 @@ export function mount(root, rawConfig) {
             faqKey = '';
             hide('.sb-faqs');
           },
-        } : { label: 'SmartFAQs', note: 'Turned off by the smartFaqs option' },
+        } : { label: 'SmartFAQs' },
         !config.resultsPage && {
           label: 'AI Recommendations',
-          note: `After ${VIEWED_TITLES} results are opened`,
           on: config.recommendations,
           set: (on) => {
             config.recommendations = on;
@@ -2442,7 +3263,6 @@ export function mount(root, rawConfig) {
         },
         !config.resultsPage && {
           label: 'AI Assist',
-          note: `Pick up to ${ASSIST_LIMIT} results`,
           on: config.assist,
           set: (on) => {
             config.assist = on;
@@ -2457,12 +3277,12 @@ export function mount(root, rawConfig) {
           set: (on) => {
             chatHost.hidden = !on;
           },
-        } : { label: 'ChatBot', note: 'Set the chatbot option' },
+        } : { label: 'ChatBot' },
       ].filter(Boolean),
     });
   }
 
-  const closeSuggestions = config.autosuggest ? wireSuggestions(root, config, submit) : () => {};
+  const closeSuggestions = config.autosuggest || config.trending ? wireSuggestions(root, config, submit) : () => {};
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -2472,7 +3292,15 @@ export function mount(root, rawConfig) {
 
   if (!config.resultsPage) {
     const initial = readUrlState(config);
-    if (initial.query) run(initial);
+    if (initial.aiMode && aiMode) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('mode');
+      window.history.replaceState(null, '', url);
+      input.value = initial.query;
+      aiMode.open(initial.query);
+    } else if (initial.query) {
+      run(initial);
+    }
   }
 
   return { run: (query) => submit(query) };
