@@ -1,0 +1,13 @@
+{
+  "domain": "https://demo1.searchblox.com",
+  "collections": "123",
+  "facets": "contenttype,keywords:Topics",
+  "pageSize": 10,
+  "smartSuggest": "toronto",
+  "aiOverview": "toronto",
+  "chatbot": "miami",
+  "recommendations": true,
+  "llmFields": "both",
+  "assist": true,
+  "settings": true
+}

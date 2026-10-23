@@ -2145,17 +2145,18 @@ html.sb-assist-open {
   }
 }
 
-/* Narrow layouts with extra buttons: the search box gets its own row. */
+/* Narrow results widgets with extra buttons: the search box gets its own row.
+   A search box only instance (header) keeps everything on one line. */
 @container (width < 480px) {
-  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) {
+  .searchblox-search:not(.sb-box-only) .sb-form:has(.sb-aimode-toggle, .sb-settings) {
     flex-wrap: wrap;
   }
 
-  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-input-wrap {
+  .searchblox-search:not(.sb-box-only) .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-input-wrap {
     flex-basis: 100%;
   }
 
-  .searchblox-search .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-submit {
+  .searchblox-search:not(.sb-box-only) .sb-form:has(.sb-aimode-toggle, .sb-settings) .sb-submit {
     flex: 1;
   }
 }

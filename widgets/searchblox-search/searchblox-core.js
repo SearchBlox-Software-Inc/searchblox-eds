@@ -3532,7 +3532,7 @@ export function mount(root, rawConfig) {
   applyTheme(root, config);
 
   if (!config.domain) {
-    root.replaceChildren(el('p', { className: 'sb-error' }, 'SearchBlox search: set the "domain" option to your SearchBlox domain.'));
+    root.replaceChildren(el('p', { className: 'sb-error' }, 'SearchBlox search: set the "domain" option (site-wide in searchblox-config, or on this widget).'));
     return { run: () => {} };
   }
 
