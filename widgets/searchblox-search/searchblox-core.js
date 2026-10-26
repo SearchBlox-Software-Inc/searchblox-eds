@@ -59,6 +59,7 @@ const FACET_LABELS = {
   lastmodified: 'Date',
   contenttype: 'Content Type',
   keywords: 'Keywords',
+  topics: 'Topics',
   colname: 'Collection',
 };
 

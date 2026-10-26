@@ -1,7 +1,7 @@
 {
   "domain": "https://demo1.searchblox.com",
   "collections": "9",
-  "facets": "contenttype,topics:Topics,keywords,lastmodified:Date",
+  "facets": "contenttype,topics,keywords,lastmodified:Date",
   "pageSize": 10,
   "aiOverview": "searchblox",
   "chatbot": "searchblox",
