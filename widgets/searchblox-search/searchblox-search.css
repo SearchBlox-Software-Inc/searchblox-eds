@@ -39,10 +39,33 @@
   --_sb-mark: #fff3b0;
   --_sb-error: #b42318;
 
+  /* One type scale, so nothing takes on the host page's text size. */
+  --_sb-fs-title: 1.0625rem;
+  --_sb-fs-body: 0.9375rem;
+  --_sb-fs-ui: 0.875rem;
+  --_sb-fs-meta: 0.8125rem;
+  --_sb-fs-label: 0.75rem;
+
   display: block;
   color: var(--sb-text); /* unset (inherits) unless --sb-text is defined */
+  font-size: 1rem;
+  line-height: 1.5;
   font-family: var(--sb-font);
   container-type: inline-size;
+}
+
+/* Host sites style headings, paragraphs and lists globally (an EDS site gives
+   headings its heading font and margins). Start them neutral inside the widget,
+   so it looks the same on every site; the rules below set what they need.
+   :where() keeps this reset weaker than any of the widget's own rules. */
+.searchblox-search :where(h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+  font-family: inherit;
+  line-height: 1.3;
+}
+
+.searchblox-search :where(p, ul, ol, dl) {
+  margin: 0;
 }
 
 .searchblox-search[data-sb-scheme='dark'] {
@@ -145,7 +168,7 @@
   align-items: center;
   padding: 10px 14px 4px;
   color: var(--_sb-muted);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   cursor: default;
@@ -166,7 +189,7 @@
 
 .searchblox-search .sb-status {
   color: var(--_sb-muted);
-  font-size: 0.9rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-facets-toggle {
@@ -240,7 +263,8 @@
   margin: 0 0 8px;
   padding-bottom: 6px;
   border-bottom: 2px solid var(--_sb-divider);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-meta);
+  font-weight: 600;
   text-transform: uppercase;
   color: var(--_sb-muted);
 }
@@ -265,7 +289,7 @@
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--_sb-fs-ui);
   line-height: 1.4;
   text-align: left;
   overflow-wrap: anywhere;
@@ -315,7 +339,7 @@
   background: var(--_sb-surface);
   color: inherit;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-facet-search::placeholder {
@@ -333,13 +357,13 @@
   gap: 16px;
   margin-top: 4px;
   padding-left: 8px;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-facet-empty {
   padding: 6px 8px;
   color: var(--_sb-muted);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-count {
@@ -415,7 +439,7 @@
   padding: 10px 20px;
   background: var(--_sb-card-strip);
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-result-detail {
@@ -509,10 +533,15 @@
 }
 
 .searchblox-search .sb-faqs-title {
-  margin: 0 0 4px;
-  color: var(--_sb-accent-text);
-  font-size: 0.95rem;
+  margin: 0 0 6px;
+  color: var(--_sb-muted);
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
+  text-transform: uppercase;
+}
+
+.searchblox-search .sb-faqs-title svg {
+  color: var(--_sb-accent-text);
 }
 
 .searchblox-search .sb-faq-list {
@@ -530,8 +559,9 @@
   gap: 12px;
   justify-content: space-between;
   padding: 12px 4px;
-  font-weight: 600;
-  line-height: 1.4;
+  font-size: var(--_sb-fs-body);
+  font-weight: 500;
+  line-height: 1.5;
   list-style: none;
   cursor: pointer;
 }
@@ -559,7 +589,8 @@
 
 .searchblox-search .sb-faq-body {
   padding: 0 4px 12px;
-  line-height: 1.55;
+  font-size: var(--_sb-fs-body);
+  line-height: 1.6;
 }
 
 .searchblox-search .sb-faq-body p {
@@ -570,13 +601,13 @@
   display: block;
   margin-bottom: 4px;
   color: var(--_sb-accent-text);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-meta);
   overflow-wrap: anywhere;
 }
 
 .searchblox-search .sb-faq-all {
   margin-top: 10px;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-faq-all[hidden] {
@@ -594,7 +625,7 @@
 .searchblox-search .sb-ai-title {
   margin: 0;
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -606,13 +637,13 @@
 .searchblox-search .sb-ai-text,
 .searchblox-search .sb-ai-points,
 .searchblox-search .sb-ai-sources {
-  font-size: 0.95rem;
+  font-size: var(--_sb-fs-body);
 }
 
 .searchblox-search .sb-ai h3 {
-  margin: 16px 0 6px;
+  margin: 24px 0 10px;
   color: var(--_sb-accent-text);
-  font-size: 0.9rem;
+  font-size: var(--_sb-fs-ui);
   font-weight: 600;
 }
 
@@ -620,9 +651,9 @@
   display: flex;
   gap: 4px;
   align-items: center;
-  margin: 18px 0 0;
+  margin: 24px 0 0;
   color: var(--_sb-accent-text);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-meta);
   font-weight: 600;
 }
 
@@ -646,7 +677,7 @@
 }
 
 .searchblox-search .sb-ai-sources li {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .searchblox-search .sb-ai-sources a {
@@ -674,7 +705,7 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
   text-align: left;
   cursor: pointer;
 }
@@ -686,7 +717,7 @@
 .searchblox-search .sb-ai-status {
   margin: 0;
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-ai-loading span {
@@ -715,7 +746,7 @@
 .searchblox-search .sb-result-title {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 1.05rem;
+  font-size: var(--_sb-fs-title);
   font-weight: 500;
   line-height: 1.35;
 }
@@ -734,7 +765,7 @@
 .searchblox-search .sb-result-url {
   overflow: hidden;
   color: var(--_sb-muted);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-meta);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -744,7 +775,7 @@
   margin: 0;
   overflow: hidden;
   overflow-wrap: anywhere;
-  font-size: 0.9rem;
+  font-size: var(--_sb-fs-body);
   line-height: 1.6;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -764,7 +795,7 @@
   border-radius: 4px;
   background: var(--_sb-hover);
   color: var(--_sb-muted);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
 }
 
@@ -788,7 +819,7 @@
   background: transparent;
   color: var(--_sb-accent-text);
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--_sb-fs-ui);
   line-height: 1;
   cursor: pointer;
 }
@@ -869,7 +900,7 @@
   border-radius: var(--sb-radius, 8px);
   background: var(--_sb-surface);
   box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-settings-panel[hidden] {
@@ -901,7 +932,7 @@
   display: flex;
   justify-content: space-between;
   color: var(--_sb-muted);
-  font-size: 0.8125rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-setting-values strong {
@@ -1117,7 +1148,7 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
   cursor: pointer;
 }
 
@@ -1169,7 +1200,7 @@
 .searchblox-search .sb-chat-speaker {
   margin: 0 0 6px;
   color: var(--_sb-accent-text);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   line-height: 1;
 }
@@ -1185,7 +1216,7 @@
   justify-content: space-between;
   margin-top: 10px;
   color: var(--_sb-muted);
-  font-size: 0.7rem;
+  font-size: var(--_sb-fs-label);
   line-height: 1;
 }
 
@@ -1215,6 +1246,10 @@
   margin: 0 0 8px;
 }
 
+.searchblox-search .sb-chat-text {
+  font-size: var(--_sb-fs-body);
+}
+
 .searchblox-search p.sb-chat-text {
   margin: 0;
 }
@@ -1223,6 +1258,8 @@
   margin-bottom: 0;
 }
 
+.searchblox-search .sb-ai-text ul,
+.searchblox-search .sb-ai-text ol,
 .searchblox-search .sb-chat-text ul,
 .searchblox-search .sb-chat-text ol {
   margin: 0 0 8px;
@@ -1231,13 +1268,13 @@
 
 .searchblox-search .sb-chat-pending {
   color: var(--_sb-muted);
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-chat-sources {
   margin: 6px 0 0;
   padding-left: 24px;
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-chat-sources a,
@@ -1247,7 +1284,7 @@
 
 .searchblox-search .sb-chat-action {
   margin-top: 8px;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-votes {
@@ -1323,7 +1360,7 @@
   background: var(--_sb-accent-subtle);
   color: var(--_sb-accent-text);
   font: inherit;
-  font-size: 0.7rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -1337,7 +1374,7 @@
 }
 
 .searchblox-search .sb-topics-more {
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
 }
 
 .searchblox-search .sb-llm {
@@ -1354,7 +1391,7 @@
   align-items: center;
   margin: 0 0 8px;
   color: var(--_sb-muted);
-  font-size: 0.7rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -1371,7 +1408,7 @@
 
 .searchblox-search .sb-llm-desc {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--_sb-fs-body);
   line-height: 1.5;
 }
 
@@ -1392,7 +1429,7 @@
   background: var(--_sb-accent);
   color: var(--_sb-accent-contrast);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 500;
   line-height: 1.4;
   vertical-align: middle;
@@ -1439,7 +1476,7 @@ html.sb-assist-open {
   border-radius: calc(var(--sb-radius, 8px) * 2);
   background: var(--_sb-surface);
   box-shadow: 0 12px 40px rgb(0 0 0 / 25%);
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-assist-tray[hidden] {
@@ -1478,7 +1515,7 @@ html.sb-assist-open {
 
 .searchblox-search .sb-assist-selected {
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
   font-weight: 400;
 }
 
@@ -1549,7 +1586,7 @@ html.sb-assist-open {
 .searchblox-search .sb-assist-count {
   margin: 0 0 12px;
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-assist-actions {
@@ -1623,7 +1660,7 @@ html.sb-assist-open {
   background: var(--_sb-accent-subtle);
   color: var(--_sb-accent-text);
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
   font-weight: 600;
   text-transform: capitalize;
   cursor: pointer;
@@ -1652,7 +1689,7 @@ html.sb-assist-open {
 
 .searchblox-search .sb-assist-doc-title {
   margin: 0 0 8px;
-  font-size: 0.95rem;
+  font-size: var(--_sb-fs-body);
 }
 
 .searchblox-search .sb-assist-doc-title a {
@@ -1706,7 +1743,7 @@ html.sb-assist-open {
 
 .searchblox-search .sb-assist-chosen li {
   max-width: 100%;
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-assist-chosen .sb-assist-doc {
@@ -1721,7 +1758,7 @@ html.sb-assist-open {
 
 .searchblox-search .sb-table table {
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-table th,
@@ -1781,12 +1818,12 @@ html.sb-assist-open {
 }
 
 .searchblox-search .sb-rec .sb-result-title {
-  font-size: 0.95rem;
+  font-size: var(--_sb-fs-body);
 }
 
 .searchblox-search .sb-rec .sb-result-desc {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-body);
 }
 
 .searchblox-search .sb-rec-new {
@@ -1798,7 +1835,7 @@ html.sb-assist-open {
   border-radius: 4px;
   background: var(--_sb-accent-subtle);
   color: var(--_sb-accent-text);
-  font-size: 0.7rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   vertical-align: middle;
 }
@@ -1809,14 +1846,14 @@ html.sb-assist-open {
   gap: 4px 14px;
   margin-top: auto;
   color: var(--_sb-muted);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
 }
 
 .searchblox-search .sb-setting-modes {
   display: flex;
   gap: 16px;
   padding: 0 0 14px;
-  font-size: 0.8125rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-setting-modes[hidden] {
@@ -1849,7 +1886,7 @@ html.sb-assist-open {
   align-items: center;
   margin-left: auto;
   color: var(--_sb-muted);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-sort[hidden],
@@ -1944,7 +1981,7 @@ html.sb-assist-open {
   background: var(--_sb-accent-subtle);
   color: var(--_sb-accent-text);
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--_sb-fs-ui);
   cursor: pointer;
 }
 
@@ -1987,12 +2024,13 @@ html.sb-assist-open {
 
 .searchblox-search .sb-empty p {
   margin: 0 0 6px;
+  font-size: var(--_sb-fs-body);
   color: var(--_sb-muted);
 }
 
 .searchblox-search .sb-empty .sb-empty-title {
   color: inherit;
-  font-size: 1.05rem;
+  font-size: var(--_sb-fs-title);
   font-weight: 600;
 }
 
@@ -2021,7 +2059,7 @@ html.sb-assist-open {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
   text-align: left;
   cursor: pointer;
 }
@@ -2240,7 +2278,7 @@ html.sb-assist-open {
 }
 
 .searchblox-search .sb-aimode-answer {
-  font-size: 0.95rem;
+  font-size: var(--_sb-fs-body);
 }
 
 .searchblox-search .sb-aimode-meta {
@@ -2259,7 +2297,7 @@ html.sb-assist-open {
   margin-top: 14px;
   border: 1px solid var(--_sb-divider);
   border-radius: var(--sb-radius, 8px);
-  font-size: 0.875rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-aimode-refs > summary {
@@ -2302,7 +2340,7 @@ html.sb-assist-open {
 .searchblox-search .sb-aimode-followups h3 {
   margin: 0 0 8px;
   color: var(--_sb-accent-text);
-  font-size: 0.9rem;
+  font-size: var(--_sb-fs-ui);
   font-weight: 600;
 }
 
@@ -2392,7 +2430,7 @@ html.sb-assist-open {
 .searchblox-search .sb-chat-refs-title {
   margin: 0 0 4px;
   color: var(--_sb-muted);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
 }
 
@@ -2424,7 +2462,7 @@ html.sb-assist-open {
 .searchblox-search .sb-chat-ref-title {
   display: block;
   color: var(--_sb-accent-text);
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
   font-weight: 500;
 }
 
@@ -2436,7 +2474,7 @@ html.sb-assist-open {
   display: block;
   overflow: hidden;
   color: var(--_sb-muted);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -2456,7 +2494,7 @@ html.sb-assist-open {
   display: grid;
   gap: 4px;
   color: var(--_sb-muted);
-  font-size: 0.8rem;
+  font-size: var(--_sb-fs-meta);
 }
 
 .searchblox-search .sb-date-input {
@@ -2469,7 +2507,7 @@ html.sb-assist-open {
   background: var(--_sb-surface);
   color: inherit;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
 }
 
 .searchblox-search .sb-date-input:focus-visible {
@@ -2487,7 +2525,7 @@ html.sb-assist-open {
   background: var(--_sb-accent);
   color: var(--_sb-accent-contrast);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--_sb-fs-ui);
   font-weight: 600;
   cursor: pointer;
 }
@@ -2528,7 +2566,7 @@ html.sb-assist-open {
   border-radius: 999px;
   background: var(--_sb-accent);
   color: var(--_sb-accent-contrast);
-  font-size: 0.75rem;
+  font-size: var(--_sb-fs-label);
   font-weight: 600;
   text-transform: none;
 }
