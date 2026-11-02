@@ -2477,8 +2477,7 @@ function renderResults(root, config, data, state, ui = {}) {
     }) : null,
     el(
       'div',
-      {},
-      el('span', { className: 'sb-badge' }, 'Featured'),
+      { className: 'sb-featured-fields' },
       safeUrl(f.url) ? el('a', {
         href: safeUrl(f.url),
         target,
@@ -2486,7 +2485,10 @@ function renderResults(root, config, data, state, ui = {}) {
         onClick: () => track(config, '/ui/v1/analytics/fr', { uid: f.uid, query: state.query }),
       }, f.title || displayUrl(f.url)) : el('strong', {}, f.title),
       f.description ? el('p', {}, f.description) : null,
+      safeUrl(f.url) ? el('span', { className: 'sb-result-url' }, displayUrl(f.url)) : null,
     ),
+    // Last, so it's read after the title; drawn in the top-right corner.
+    el('span', { className: 'sb-featured-badge' }, 'Featured'),
   )));
 
   if (featured.length) {
@@ -2655,8 +2657,11 @@ function renderFaqs(root, config, query, { faqs, selected }) {
 // AI recommendations, between the SmartFAQs and the results. `recs` is
 // { items, sessionId, previous: [uids] } or null; `loading` shows placeholders
 // (or a note beside the heading while earlier recommendations are shown);
-// `fresh` announces a new set for 5 seconds, as the plugin does.
-function renderRecommendations(root, config, recs, { loading, fresh, query }) {
+// `fresh` announces a new set for 5 seconds, as the plugin does. `onOpen(result)`
+// counts an opened recommendation as a viewed page, so the next set follows it.
+function renderRecommendations(root, config, recs, {
+  loading, fresh, query, onOpen,
+}) {
   const id = `${root.querySelector('.sb-input').id}-recs`;
   let section = root.querySelector('.sb-recs');
   if (!section) {
@@ -2710,6 +2715,7 @@ function renderRecommendations(root, config, recs, { loading, fresh, query }) {
           pos: i + 1,
           page: 1,
         });
+        onOpen?.(r);
       };
       return el(
         'li',
@@ -2746,7 +2752,10 @@ function wireSuggestions(root, config, submit) {
 
   let picks = [];
 
+  // Also drops a pending lookup, so its answer can't reopen the list after a search.
   const close = () => {
+    clearTimeout(timer);
+    controller?.abort();
     list.hidden = true;
     list.replaceChildren();
     input.setAttribute('aria-expanded', 'false');
@@ -3625,6 +3634,14 @@ export function mount(root, rawConfig) {
     if (node) node.hidden = true;
   };
 
+  // A result or recommendation opened: its title joins the last few viewed,
+  // which the next recommendations follow.
+  const noteViewed = (r) => {
+    const title = stripTags(r.title);
+    const titles = readSession(VIEWED_KEY, []).filter((t) => t !== title);
+    writeSession(VIEWED_KEY, [...titles, title].slice(-VIEWED_TITLES));
+  };
+
   // AI recommendations once enough results have been opened. They're kept for
   // the tab and only fetched again when the opened titles change.
   const runRecommendations = (state) => {
@@ -3636,7 +3653,14 @@ export function mount(root, rawConfig) {
     const cnames = values(state.filters?.colname);
     const key = JSON.stringify([titles, config.collections, cnames]);
     const show = (loading, fresh = false) => renderRecommendations(root, config, recs, {
-      loading, fresh, query: state.query,
+      loading,
+      fresh,
+      query: state.query,
+      // Only finishes if the page stays (new tab); otherwise the next search does it.
+      onOpen: (r) => {
+        noteViewed(r);
+        if (current) runRecommendations(current);
+      },
     });
     if (recs?.key === key) {
       show(false);
@@ -3676,9 +3700,7 @@ export function mount(root, rawConfig) {
     },
     onOpen: (r) => {
       if (!config.recommendations) return;
-      const title = stripTags(r.title);
-      const titles = readSession(VIEWED_KEY, []).filter((t) => t !== title);
-      writeSession(VIEWED_KEY, [...titles, title].slice(-VIEWED_TITLES));
+      noteViewed(r);
       // Only finishes if the page stays (new tab); otherwise the next search does it.
       if (current) runRecommendations(current);
     },
@@ -3713,7 +3735,8 @@ export function mount(root, rawConfig) {
     controller?.abort();
     controller = new AbortController();
     const mine = controller;
-    input.value = state.query === '*' ? '' : state.query;
+    // An empty search runs as "*" but leaves the box empty; a typed "*" stays.
+    if (state.query !== '*' || input.value.trim() !== '') input.value = state.query;
     writeUrlState(config, state);
     // "*" lists everything: there's no question to answer.
     const asked = state.query !== '*';

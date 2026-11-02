@@ -453,23 +453,60 @@
 }
 
 .searchblox-search .sb-featured-item {
+  position: relative;
   display: flex;
   gap: 16px;
-  margin-bottom: 8px;
-  padding: 16px;
-  border: 1px solid var(--_sb-divider);
-  border-radius: var(--sb-radius, 8px);
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding: 24px;
+  border: 1px solid var(--_sb-card-border);
+  border-radius: calc(var(--sb-radius, 8px) * 2);
   background: var(--_sb-accent-subtle);
 }
 
 .searchblox-search .sb-featured-item img {
+  flex-shrink: 0;
   width: 64px;
   height: 64px;
   object-fit: contain;
 }
 
+.searchblox-search .sb-featured-fields {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-right: 88px; /* clear of the badge */
+}
+
+.searchblox-search .sb-featured-item a,
+.searchblox-search .sb-featured-item strong {
+  overflow-wrap: anywhere;
+  font-size: var(--_sb-fs-title);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 .searchblox-search .sb-featured-item p {
-  margin: 4px 0 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--_sb-fs-body);
+  line-height: 1.6;
+}
+
+.searchblox-search .sb-featured-badge {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  padding: 4px 14px;
+  border-radius: 0 calc(var(--sb-radius, 8px) * 2) 0 var(--sb-radius, 8px);
+  background: var(--_sb-accent);
+  color: var(--_sb-accent-contrast);
+  font-size: var(--_sb-fs-label);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .searchblox-search .sb-ai {
