@@ -34,7 +34,7 @@ const DEFAULTS = {
   resultsPage: '',
   queryParam: 'q',
   syncUrl: true,
-  newTab: false,
+  newTab: true,
   sort: 'relevance',
   vectorWeight: 0.2,
   vectorThreshold: 0.6,
@@ -2199,7 +2199,9 @@ function renderFacets(root, config, data, state, draft = null) {
   const showCounts = config.vectorWeight === 0;
   const groups = config.facets
     .map((facet) => ({ ...facet, items: data.facets[facet.field] || [] }))
-    .filter((facet) => facet.items.length || selectedIn(facet.field).length);
+    // Date ranges come back even when empty (count 0), so a facet only shows
+    // when some value has documents, or one is applied and can be cleared.
+    .filter((facet) => facet.items.some((item) => item.count > 0) || selectedIn(facet.field).length);
 
   // Filtering re-renders the sidebar; keep keyboard focus on the same option.
   const focused = document.activeElement;
@@ -2715,7 +2717,9 @@ function renderRecommendations(root, config, recs, {
           pos: i + 1,
           page: 1,
         });
-        onOpen?.(r);
+        // Deferred: onOpen re-renders this list, and a link removed from the
+        // page during its own click doesn't open.
+        setTimeout(() => onOpen?.(r));
       };
       return el(
         'li',
