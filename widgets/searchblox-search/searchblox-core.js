@@ -2201,7 +2201,8 @@ function renderFacets(root, config, data, state, draft = null) {
     .map((facet) => ({ ...facet, items: data.facets[facet.field] || [] }))
     // Date ranges come back even when empty (count 0), so a facet only shows
     // when some value has documents, or one is applied and can be cleared.
-    .filter((facet) => facet.items.some((item) => item.count > 0) || selectedIn(facet.field).length);
+    .filter((facet) => facet.items.some((item) => item.count > 0)
+      || selectedIn(facet.field).length);
 
   // Filtering re-renders the sidebar; keep keyboard focus on the same option.
   const focused = document.activeElement;
