@@ -1800,10 +1800,14 @@ html.sb-assist-open {
 
 .searchblox-search .sb-table th,
 .searchblox-search .sb-table td {
+  /* The answer text wraps anywhere, which squeezes columns to a letter wide;
+     cells wrap between words and the table scrolls when it doesn't fit. */
+  min-width: 9em;
   padding: 8px 10px;
   border: 1px solid var(--_sb-divider);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: break-word;
 }
 
 .searchblox-search .sb-table th {
@@ -2255,17 +2259,59 @@ html.sb-assist-open {
   display: none;
 }
 
+/* AI Mode has its own question box, so the search box and button step aside;
+   the AI Mode toggle and the other buttons stay, to switch back. */
+.searchblox-search.sb-aimode-on > .sb-form > .sb-input-wrap,
+.searchblox-search.sb-aimode-on > .sb-form > .sb-submit {
+  display: none;
+}
+
+.searchblox-search.sb-aimode-on > .sb-form {
+  justify-content: flex-end;
+}
+
+/* The AI Mode panel: a gradient border and an accent tint at the top set it
+   apart from the results it replaces. */
 .searchblox-search .sb-aimode {
+  --_sb-ai-glow: color-mix(in srgb, var(--_sb-accent) 55%, #ec4899);
+
   padding: 18px 24px 20px;
-  border: 1px solid var(--_sb-divider);
+  border: 1.5px solid transparent;
   border-radius: calc(var(--sb-radius, 8px) * 3);
+  background:
+    linear-gradient(180deg, var(--_sb-accent-subtle), transparent 220px) padding-box,
+    linear-gradient(var(--_sb-surface), var(--_sb-surface)) padding-box,
+    linear-gradient(135deg, var(--_sb-accent), var(--_sb-ai-glow)) border-box;
+  box-shadow: 0 12px 32px -12px color-mix(in srgb, var(--_sb-accent) 35%, transparent);
   line-height: 1.6;
+  animation: sb-aimode-in 0.25s ease-out;
+}
+
+@keyframes sb-aimode-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .searchblox-search .sb-aimode-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.searchblox-search .sb-aimode-header .sb-ai-title {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 12px 4px 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--_sb-accent), var(--_sb-ai-glow));
+  color: var(--_sb-accent-contrast);
+}
+
+.searchblox-search .sb-aimode-header .sb-ai-title svg {
+  color: inherit;
 }
 
 .searchblox-search .sb-aimode-empty {
@@ -2309,6 +2355,8 @@ html.sb-assist-open {
 
 .searchblox-search .sb-aimode-question {
   margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 3px solid var(--_sb-accent);
   font-size: 1.15rem;
   font-weight: 600;
   line-height: 1.4;
@@ -2388,6 +2436,18 @@ html.sb-assist-open {
   border-top: 1px solid var(--_sb-divider);
 }
 
+/* The AI question box stands in for the hidden search box, so it's the one
+   that looks ready to type into. */
+.searchblox-search .sb-aimode-form .sb-input {
+  border: 1.5px solid var(--_sb-accent);
+  box-shadow: 0 0 0 4px var(--_sb-accent-subtle);
+}
+
+.searchblox-search .sb-aimode-form .sb-input:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--_sb-accent) 30%, transparent);
+}
+
 .searchblox-search .sb-aimode-exit {
   flex-shrink: 0;
   height: 44px;
@@ -2430,7 +2490,8 @@ html.sb-assist-open {
 
 @media (prefers-reduced-motion: reduce) {
   .searchblox-search .sb-spinner,
-  .searchblox-search .sb-voice.is-listening {
+  .searchblox-search .sb-voice.is-listening,
+  .searchblox-search .sb-aimode {
     animation: none;
   }
 }

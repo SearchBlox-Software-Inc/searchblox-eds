@@ -5,6 +5,8 @@
   "pageSize": 10,
   "aiOverview": "searchblox",
   "chatbot": "searchblox",
+  "aiMode": "searchblox",
+  "voiceSearch": true,
   "recommendations": true,
   "assist": true,
   "settings": true
